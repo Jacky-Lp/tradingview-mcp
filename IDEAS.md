@@ -14,6 +14,34 @@ Improvements tracked but not yet implemented.
 - **2026-04-25** — E2e wrapper refactor: 37 of 79 raw `evaluate(...CHART_API...)` sites replaced with wrapper calls (`coreChart`, `coreDrawing`, `coreHealth`, `corePine`, `coreData`, `coreUi`, `coreIndicators`). Includes the four "output size budget" tests that were re-implementing wrapper IIFEs verbatim — now they assert the wrapper's actual output, so a TV API rename produces a single-source failure instead of parallel-implementation drift. Down to 42 raw sites; the rest are DOM existence probes, FIND_MONACO walks, or BARS_PATH single-bar reads with no wrapper equivalent. (`refactor/wrappers-and-di`)
 - **2026-04-25** — TV Desktop 3.1.0 quirks wiki entry written at `~/ai/wiki/vendors/tradingview-desktop.md` covering API surface changes, state-pollution traps, Pine graphics object path, and launch-path quirks.
 
+## Fork audit 2026-05-09
+
+Sourced from `scripts/audit_forks.sh --top 100` (report at `/tmp/fork_audit.md`).
+
+### Shipped this audit cycle
+
+- **`chart_remove_studies_by_title`** (commit a few above) — bulk title-substring removal via `getAllStudies` + `removeEntity`. Saves a `chart_get_state` roundtrip when the caller has the script name but not entity_id. Sourced from prezis (their `pine_remove_study` fix didn't apply directly because our `chart_manage_indicator` already used `removeEntity`, but the title-match capability was a genuine gap).
+- **CDP reliability bundle** — `withReconnect()` helper, 2s liveness timeout in `getClient()` with timer cleanup, and `Emulation.setFocusEmulationEnabled` on every (re)attach (so background-tab screenshots keep painting). Sourced from upstream PR #131 + dsfortescue fork (`99cc9c5`).
+- **`data_get_strategy_info`** — strategy name (internal API on `metaInfo`) + Strategy Tester date range (DOM scrape). Sourced from PasanteAdmin.
+
+### Audited, no genuine gap
+
+- **KarmicP — CDP injection sanitization across 9 modules.** Our `tests/sanitization.test.js` (353 lines) already covers `safeString`, `requireFinite`, source-level audit. The two files without `safeString` (`capture.js`, `pine.js`) interpolate server-controlled strings (internal `colPath`, generated `token`), not user input.
+- **dsfortescue — `tab_switch` CDP redirect.** Our `switchTab` already calls `connectToTarget(target.id)` after `Target.activateTarget`. Their fix targeted a fork that didn't reconnect at all.
+- **PasanteAdmin — `strategy_tester_open/close/get_results/get_trades`.** `ui_open_panel('strategy-tester')` covers open/close. Our `data_get_strategy_results` uses `_reportData.performance` (internal API) which is locale-stable and exposes more metrics than PasanteAdmin's DOM scrape. Same for `data_get_trades` (uses `_reportData.trades`). Their `set_settings` was deferred upstream by PasanteAdmin themselves (DOM-text matching was unreliable).
+
+### Still on the backlog
+
+- **KarmicP — validate cloud-persisted values** before round-tripping (alert payloads, watchlist names, layout names). Belt-and-braces against TV-side input that bypasses our local sanitization.
+- **KarmicP — `pine_set_source` hangs on large scripts.** Diff their fix against our current chunked-paste path; ours may have the same race.
+- **PasanteAdmin — EPIPE-on-close crash + graceful CDP teardown.** TV closes the WS abruptly on quit; our shutdown path can throw. Their fix sequences `Browser.close → detach → process.exit`.
+- **PasanteAdmin — strict `smart_compile` honest success.** We already check study-count delta; their check catches the false-positive when an unrelated study is added concurrently. Tighten ours by filtering by Pine title rather than count.
+- **prezis — `deployMultipleScripts`** (multi-indicator deploy in one CDP round-trip). Pairs with `chart_manage_indicator`.
+- **prezis — `pine_switch_script`** via the Pine editor dropdown (UI path, not REST). Useful when the script isn't already on chart.
+- **prezis — `fib-truth.js`** exact OHLCV wick lookup for Fib ground-truth verification.
+- **KarmicP — replay CLI ergonomics.** `--chart`/`-c` to switch tab before replay; `--layout`/`-l` to load a saved layout first; compound `replay_start` accepting flexible date formats.
+- **yaojinhui1993 — chart data download workflow.** `target_id` + filename params for bulk OHLCV export via TV's native download path; complements our 500-bar `data_get_ohlcv` cap.
+
 ## Held for design discussion
 
 - **C.23 AsyncLocalStorage tab routing + persistent pin + study-readiness gate** (floatalgo `81efb1ff`) — significant architectural change to how tools are routed across tabs. Needs design call before code.

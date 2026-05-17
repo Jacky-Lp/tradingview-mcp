@@ -39,7 +39,7 @@ describe('core/pine.js — smoke', () => {
     // Call 1: ensurePineEditorOpen → true; Call 2: getValue returns source
     let call = 0;
     installCdpMocks({
-      evaluate: async () => (++call === 1 ? true : '//@version=6\nindicator("test")\nplot(close)'),
+      evaluate: async () => (++call <= 2 ? true : '//@version=6\nindicator("test")\nplot(close)'),
     });
     const r = await pine.getSource();
     assert.equal(r.success, true);
@@ -69,7 +69,7 @@ describe('core/pine.js — smoke', () => {
     // Call 2: click button → returns label
     let call = 0;
     installCdpMocks({
-      evaluate: async () => (++call === 1 ? true : 'Save and add to chart'),
+      evaluate: async () => (++call <= 2 ? true : 'Save and add to chart'),
     });
     const r = await pine.compile();
     assert.equal(r.success, true);
@@ -80,7 +80,7 @@ describe('core/pine.js — smoke', () => {
     let call = 0;
     installCdpMocks({
       getClient: async () => fakeCdpClient(),
-      evaluate: async () => (++call === 1 ? true : null),
+      evaluate: async () => (++call <= 2 ? true : null),
     });
     const r = await pine.compile();
     assert.equal(r.button_clicked, 'keyboard_shortcut');
@@ -89,7 +89,7 @@ describe('core/pine.js — smoke', () => {
   it('test_getErrors_smoke', async () => {
     let call = 0;
     installCdpMocks({
-      evaluate: async () => (++call === 1 ? true : [
+      evaluate: async () => (++call <= 2 ? true : [
         { line: 3, column: 5, message: 'Undeclared identifier', severity: 8 },
       ]),
     });
@@ -103,7 +103,7 @@ describe('core/pine.js — smoke', () => {
     let call = 0;
     installCdpMocks({
       getClient: async () => fakeCdpClient(),
-      evaluate: async () => (++call === 1 ? true : false),  // no save-dialog
+      evaluate: async () => (++call <= 2 ? true : false),  // no save-dialog
     });
     const r = await pine.save();
     assert.equal(r.success, true);
@@ -113,7 +113,7 @@ describe('core/pine.js — smoke', () => {
   it('test_getConsole_smoke', async () => {
     let call = 0;
     installCdpMocks({
-      evaluate: async () => (++call === 1 ? true : [
+      evaluate: async () => (++call <= 2 ? true : [
         { timestamp: '12:00:00', type: 'info', message: 'compiled' },
       ]),
     });
@@ -127,11 +127,18 @@ describe('core/pine.js — smoke', () => {
     installCdpMocks({
       evaluate: async () => {
         call++;
-        if (call === 1) return true;    // ensurePineEditorOpen
-        if (call === 2) return 3;       // studiesBefore
-        if (call === 3) return 'Add to chart';
-        if (call === 4) return [];      // errors after
-        return 4;                        // studiesAfter
+        if (call === 1) return true;    // PINE_EDITOR_DIALOG_PRESENT
+        if (call === 2) return true;    // FIND_MONACO (ensurePineEditorOpen fast-path)
+        if (call === 3) return [        // studiesBefore (array form)
+          { id: 's1', name: 'RSI' },
+        ];
+        if (call === 4) return 'My Strategy'; // pineTitleBefore
+        if (call === 5) return 'Add to chart'; // button click
+        if (call === 6) return [];      // errors after
+        return [                          // studiesAfter
+          { id: 's1', name: 'RSI' },
+          { id: 's2', name: 'My Strategy' },
+        ];
       },
     });
     const r = await pine.smartCompile();
@@ -139,6 +146,54 @@ describe('core/pine.js — smoke', () => {
     assert.equal(r.button_clicked, 'Add to chart');
     assert.equal(r.has_errors, false);
     assert.equal(r.study_added, true);
+    assert.equal(r.pine_title, 'My Strategy');
+    assert.equal(r.matched_study.id, 's2');
+  });
+
+  it('test_smartCompile_smoke_rejects_unrelated_concurrent_add', async () => {
+    // PasanteAdmin honest-success: a NEW study appeared but its name
+    // doesn't match the Pine editor title — must NOT report study_added.
+    let call = 0;
+    installCdpMocks({
+      evaluate: async () => {
+        call++;
+        if (call === 1) return true;    // PINE_EDITOR_DIALOG_PRESENT
+        if (call === 2) return true;    // FIND_MONACO
+        if (call === 3) return [{ id: 's1', name: 'RSI' }];
+        if (call === 4) return 'My Strategy'; // editor has My Strategy open
+        if (call === 5) return 'Add to chart';
+        if (call === 6) return [];
+        // After: My Strategy did NOT land; user added MACD concurrently
+        return [
+          { id: 's1', name: 'RSI' },
+          { id: 's3', name: 'MACD' },
+        ];
+      },
+    });
+    const r = await pine.smartCompile();
+    assert.equal(r.study_added, false, 'mismatched study name must not count as study_added');
+    assert.equal(r.matched_study, null);
+    assert.equal(r.new_studies.length, 1, 'new_studies still surfaced for caller inspection');
+    assert.equal(r.new_studies[0].name, 'MACD');
+  });
+
+  it('test_smartCompile_smoke_no_new_studies', async () => {
+    let call = 0;
+    installCdpMocks({
+      evaluate: async () => {
+        call++;
+        if (call === 1) return true;    // PINE_EDITOR_DIALOG_PRESENT
+        if (call === 2) return true;    // FIND_MONACO
+        if (call === 3) return [{ id: 's1', name: 'RSI' }];
+        if (call === 4) return 'My Strategy';
+        if (call === 5) return 'Update on chart'; // existing study updated
+        if (call === 6) return [];
+        return [{ id: 's1', name: 'RSI' }]; // no diff
+      },
+    });
+    const r = await pine.smartCompile();
+    assert.equal(r.study_added, false);
+    assert.deepEqual(r.new_studies, []);
   });
 
   it('test_newScript_smoke', async () => {

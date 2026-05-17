@@ -73,13 +73,14 @@ export function registerUiTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('ui_mouse_click', 'Click at specific x,y coordinates on the TradingView window', {
-    x: z.coerce.number().describe('X coordinate (pixels from left)'),
-    y: z.coerce.number().describe('Y coordinate (pixels from top)'),
+  server.tool('ui_mouse_click', 'Click at specific x,y coordinates OR on a DOM-matched element. Pass selector to side-step the WSL2 / HiDPI devicePixelRatio mismatch (CSS-pixel coords from ui_find_element land on adjacent elements when sent raw to dispatchMouseEvent). Selector path computes the element center in CSS pixels then multiplies by devicePixelRatio internally.', {
+    x: z.coerce.number().optional().describe('X coordinate in DEVICE pixels (pre-scaled by devicePixelRatio). Omit when using selector.'),
+    y: z.coerce.number().optional().describe('Y coordinate in DEVICE pixels (pre-scaled by devicePixelRatio). Omit when using selector.'),
+    selector: z.string().optional().describe('CSS selector to click. Element\'s center is computed and devicePixelRatio-scaled internally. Preferred over raw coords.'),
     button: z.enum(['left', 'right', 'middle']).optional().describe('Mouse button (default left)'),
     double_click: z.coerce.boolean().optional().describe('Double click (default false)'),
-  }, async ({ x, y, button, double_click }) => {
-    try { return jsonResult(await core.mouseClick({ x, y, button, double_click })); }
+  }, async ({ x, y, selector, button, double_click }) => {
+    try { return jsonResult(await core.mouseClick({ x, y, selector, button, double_click })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

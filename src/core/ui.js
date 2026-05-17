@@ -372,42 +372,116 @@ export async function scroll({ direction, amount, _deps }) {
   return { success: true, direction, amount: px };
 }
 
-export async function mouseClick({ x, y, button, double_click, _deps }) {
-  const { getClient } = _resolve(_deps);
+/**
+ * Click at chart-window coordinates or on a DOM-selected element.
+ *
+ * Coordinate model: `Input.dispatchMouseEvent` expects DEVICE pixels on
+ * Electron/TV Desktop, while `getBoundingClientRect()` returns CSS pixels.
+ * On HiDPI displays and WSL2-driven Windows TV (typical devicePixelRatio
+ * 1.25 or 1.5), a CSS-pixel click lands on the wrong element — e.g. the
+ * Alert button when the caller meant Bar Replay (IDEAS line 199-207).
+ *
+ * Pass `selector` to side-step the coord-space problem entirely: the
+ * element's center is computed in CSS pixels via getBoundingClientRect(),
+ * then multiplied by devicePixelRatio before being sent to CDP. The raw
+ * `x`/`y` path is unchanged for callers who already pre-scaled.
+ */
+export async function mouseClick({ x, y, selector, button, double_click, _deps }) {
+  const { getClient, evaluate } = _resolve(_deps);
   const c = await getClient();
   const btn = button === 'right' ? 'right' : button === 'middle' ? 'middle' : 'left';
   const btnNum = btn === 'right' ? 2 : btn === 'middle' ? 1 : 0;
-  await c.Input.dispatchMouseEvent({ type: 'mouseMoved', x, y });
-  await c.Input.dispatchMouseEvent({ type: 'mousePressed', x, y, button: btn, buttons: btnNum, clickCount: 1 });
-  await c.Input.dispatchMouseEvent({ type: 'mouseReleased', x, y, button: btn });
+
+  let clickX = x;
+  let clickY = y;
+  let resolved = null;
+  if (selector) {
+    resolved = await evaluate(`
+      (function() {
+        try {
+          var el = document.querySelector(${JSON.stringify(selector)});
+          if (!el) return { found: false };
+          if (el.offsetParent === null) return { found: true, visible: false };
+          var r = el.getBoundingClientRect();
+          return {
+            found: true,
+            visible: true,
+            dpr: window.devicePixelRatio || 1,
+            cssX: r.x + r.width / 2,
+            cssY: r.y + r.height / 2,
+            cssW: r.width,
+            cssH: r.height,
+          };
+        } catch(e) { return { found: false, err: e.message }; }
+      })()
+    `);
+    if (!resolved || !resolved.found) {
+      throw new Error(`selector "${selector}" did not match any element`);
+    }
+    if (!resolved.visible) {
+      throw new Error(`selector "${selector}" matched a hidden element (offsetParent: null)`);
+    }
+    clickX = resolved.cssX * resolved.dpr;
+    clickY = resolved.cssY * resolved.dpr;
+  }
+
+  if (clickX == null || clickY == null) {
+    throw new Error('mouseClick requires either { x, y } or { selector }.');
+  }
+
+  await c.Input.dispatchMouseEvent({ type: 'mouseMoved', x: clickX, y: clickY });
+  await c.Input.dispatchMouseEvent({ type: 'mousePressed', x: clickX, y: clickY, button: btn, buttons: btnNum, clickCount: 1 });
+  await c.Input.dispatchMouseEvent({ type: 'mouseReleased', x: clickX, y: clickY, button: btn });
   if (double_click) {
     await new Promise(r => setTimeout(r, 50));
-    await c.Input.dispatchMouseEvent({ type: 'mousePressed', x, y, button: btn, buttons: btnNum, clickCount: 2 });
-    await c.Input.dispatchMouseEvent({ type: 'mouseReleased', x, y, button: btn });
+    await c.Input.dispatchMouseEvent({ type: 'mousePressed', x: clickX, y: clickY, button: btn, buttons: btnNum, clickCount: 2 });
+    await c.Input.dispatchMouseEvent({ type: 'mouseReleased', x: clickX, y: clickY, button: btn });
   }
-  return { success: true, x, y, button: btn, double_click: !!double_click };
+  return {
+    success: true,
+    x: clickX,
+    y: clickY,
+    button: btn,
+    double_click: !!double_click,
+    ...(selector ? { selector, resolved: { dpr: resolved.dpr, css_x: resolved.cssX, css_y: resolved.cssY } } : {}),
+  };
 }
 
 export async function findElement({ query, strategy, _deps }) {
   const { evaluate } = _resolve(_deps);
   const strat = strategy || 'text';
-  const results = await evaluate(`
+  const probe = await evaluate(`
     (function() {
       var query = ${JSON.stringify(query)};
       var strategy = ${JSON.stringify(strat)};
+      var dpr = window.devicePixelRatio || 1;
       var results = [];
+      function record(el) {
+        var rect = el.getBoundingClientRect();
+        results.push({
+          tag: el.tagName.toLowerCase(),
+          text: (el.textContent || '').trim().substring(0, 80),
+          aria_label: el.getAttribute('aria-label') || null,
+          data_name: el.getAttribute('data-name') || null,
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          // device_x/y multiply by devicePixelRatio so callers can pass
+          // them straight to Input.dispatchMouseEvent without scaling.
+          // On WSL2 Windows TV (dpr 1.25) the CSS center vs device center
+          // differ enough that clicks land on adjacent elements.
+          device_x: (rect.x + rect.width / 2) * dpr,
+          device_y: (rect.y + rect.height / 2) * dpr,
+          visible: el.offsetParent !== null,
+        });
+      }
       if (strategy === 'css') {
         var els = document.querySelectorAll(query);
-        for (var i = 0; i < Math.min(els.length, 20); i++) {
-          var rect = els[i].getBoundingClientRect();
-          results.push({ tag: els[i].tagName.toLowerCase(), text: (els[i].textContent || '').trim().substring(0, 80), aria_label: els[i].getAttribute('aria-label') || null, data_name: els[i].getAttribute('data-name') || null, x: rect.x, y: rect.y, width: rect.width, height: rect.height, visible: els[i].offsetParent !== null });
-        }
+        for (var i = 0; i < Math.min(els.length, 20); i++) record(els[i]);
       } else if (strategy === 'aria-label') {
         var els = document.querySelectorAll('[aria-label*="' + query.replace(/"/g, '\\\\"') + '"]');
-        for (var i = 0; i < Math.min(els.length, 20); i++) {
-          var rect = els[i].getBoundingClientRect();
-          results.push({ tag: els[i].tagName.toLowerCase(), text: (els[i].textContent || '').trim().substring(0, 80), aria_label: els[i].getAttribute('aria-label') || null, data_name: els[i].getAttribute('data-name') || null, x: rect.x, y: rect.y, width: rect.width, height: rect.height, visible: els[i].offsetParent !== null });
-        }
+        for (var i = 0; i < Math.min(els.length, 20); i++) record(els[i]);
       } else {
         var all = document.querySelectorAll('button, a, [role="button"], [role="menuitem"], [role="tab"], input, select, label, span, div, h1, h2, h3, h4');
         for (var i = 0; i < all.length; i++) {
@@ -415,14 +489,22 @@ export async function findElement({ query, strategy, _deps }) {
           if (text.toLowerCase().indexOf(query.toLowerCase()) !== -1 && text.length < 200) {
             var rect = all[i].getBoundingClientRect();
             if (rect.width > 0 && rect.height > 0) {
-              results.push({ tag: all[i].tagName.toLowerCase(), text: text.substring(0, 80), aria_label: all[i].getAttribute('aria-label') || null, data_name: all[i].getAttribute('data-name') || null, x: rect.x, y: rect.y, width: rect.width, height: rect.height, visible: all[i].offsetParent !== null });
+              record(all[i]);
               if (results.length >= 20) break;
             }
           }
         }
       }
-      return results;
+      return { dpr: dpr, elements: results };
     })()
   `);
-  return { success: true, query, strategy: strat, count: results?.length || 0, elements: results || [] };
+  const results = probe?.elements || [];
+  return {
+    success: true,
+    query,
+    strategy: strat,
+    device_pixel_ratio: probe?.dpr ?? 1,
+    count: results.length,
+    elements: results,
+  };
 }

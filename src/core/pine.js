@@ -89,10 +89,36 @@ const OPEN_PINE_PANEL = `
         else if (typeof bwb.showWidget === 'function') { bwb.showWidget('pine-editor'); actions.push('showWidget'); }
       } catch(e) {}
     }
-    var btn = document.querySelector('[data-name="pine-dialog-button"]')
-      || document.querySelector('[aria-label="Pine"]');
-    if (btn) { btn.click(); actions.push('button-click'); }
+    // Selector cascade — try the most stable first, fall back through.
+    // On TV 3.1.0+ pine-dialog-button is the bottom-toolbar button; if a
+    // chart already has a Pine indicator loaded, [data-qa-id="legend-pine-action"]
+    // ("Source code" button in the indicator's legend) is also a valid
+    // opener and is sometimes present earlier in the cold-start lifecycle
+    // than pine-dialog-button.
+    var openers = [
+      '[data-name="pine-dialog-button"]',
+      '[aria-label="Pine"]',
+      '[data-qa-id="legend-pine-action"]',
+    ];
+    for (var i = 0; i < openers.length; i++) {
+      var el = document.querySelector(openers[i]);
+      if (el && el.offsetParent !== null) {
+        el.click();
+        actions.push('click:' + openers[i]);
+        break;
+      }
+    }
     return actions.length ? actions.join('+') : null;
+  })()
+`;
+
+// Fast presence check for "Pine editor is open" — the dialog container has
+// a stable data-qa-id and is cheaper to query than the FIND_MONACO React
+// fiber walk. Used as a short-circuit before falling back to FIND_MONACO.
+const PINE_EDITOR_DIALOG_PRESENT = `
+  (function() {
+    var d = document.querySelector('[data-qa-id="pine-editor-dialog"]');
+    return d !== null && d.offsetParent !== null;
   })()
 `;
 
@@ -102,21 +128,24 @@ const OPEN_PINE_PANEL = `
  *
  * Re-invokes the panel-open trigger every 2s during the poll, to recover
  * from transitional states where the panel auto-closes or Monaco hasn't yet
- * settled.
+ * settled. Total budget: 20s (100 × 200ms) — covers fresh-chart cold start
+ * where the pine-dialog-button takes longer than the prior 10s window to
+ * register in the DOM.
  */
 export async function ensurePineEditorOpen({ _deps } = {}) {
   const { evaluate } = _resolve(_deps);
-  const already = await evaluate(`
-    (function() {
-      var m = ${FIND_MONACO};
-      return m !== null;
-    })()
-  `);
-  if (already) return true;
+
+  // Cheap check first: is the dialog visible? Skips the heavier
+  // FIND_MONACO walk in the common case.
+  const dialogOpen = await evaluate(PINE_EDITOR_DIALOG_PRESENT);
+  if (dialogOpen) {
+    const monacoReady = await evaluate(`(function() { return ${FIND_MONACO} !== null; })()`);
+    if (monacoReady) return true;
+  }
 
   await evaluate(OPEN_PINE_PANEL);
 
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 100; i++) {
     await new Promise(r => setTimeout(r, 200));
     const ready = await evaluate(`(function() { return ${FIND_MONACO} !== null; })()`);
     if (ready) return true;
@@ -540,35 +569,73 @@ export async function smartCompile({ _deps } = {}) {
   const editorReady = await ensurePineEditorOpen({ _deps });
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
+  // Snapshot studies WITH ids so the post-check can tell whether the
+  // delta came from this script vs an unrelated study added concurrently
+  // (the PasanteAdmin honest-success case). Falls back to legacy count
+  // semantics if getAllStudies isn't available.
   const studiesBefore = await evaluate(`
     (function() {
       try {
         var chart = window.TradingViewApi._activeChartWidgetWV.value();
-        if (chart && typeof chart.getAllStudies === 'function') return chart.getAllStudies().length;
+        if (chart && typeof chart.getAllStudies === 'function') {
+          return chart.getAllStudies().map(function(s) {
+            return { id: s.id, name: s.name || s.title || '' };
+          });
+        }
       } catch(e) {}
       return null;
     })()
   `);
 
+  // Also read the Pine editor's current script title so we can match
+  // it against newly-added studies. Lives in [data-qa-id="pine-script-title-button"].
+  const pineTitleBefore = await evaluate(`
+    (function() {
+      try {
+        var btn = document.querySelector('[data-qa-id="pine-script-title-button"]');
+        if (!btn) return null;
+        var h2 = btn.querySelector('h2') || btn;
+        return (h2.textContent || '').trim() || null;
+      } catch(e) { return null; }
+    })()
+  `);
+
   const buttonClicked = await evaluate(`
     (function() {
+      // Fast path: TV's stable selector. Survives icon-only button refactors
+      // because data-qa-id is a test/QA attribute, not styling.
+      var qa = document.querySelector('[data-qa-id="add-script-to-chart"]');
+      if (qa && qa.offsetParent !== null) {
+        qa.click();
+        var t = qa.getAttribute('title') || '';
+        return /update on chart/i.test(t) ? 'Update on chart' : 'Add to chart';
+      }
+
+      // Fallback: walk buttons by label. Skip elements whose textContent
+      // is the *concatenation* of multiple child labels (an outer wrapper
+      // div around several buttons would have textContent like
+      // "Untitled scriptAdd to chartAdd to chartPublish script" — never a
+      // real single-button label). Real Pine action buttons are leaf
+      // BUTTON elements with ≤30 chars of text/title.
       var btns = document.querySelectorAll('button');
       var addBtn = null;
       var updateBtn = null;
+      var saveAddBtn = null;
       var saveBtn = null;
       for (var i = 0; i < btns.length; i++) {
-        var text = btns[i].textContent.trim();
-        // TV Desktop 3.1.0+ ships these as icon-only buttons; label lives in the title attr.
-        var title = btns[i].getAttribute('title') || '';
+        var b = btns[i];
+        if (b.offsetParent === null) continue;
+        var text = (b.textContent || '').trim();
+        var title = b.getAttribute('title') || '';
         var label = text || title;
-        if (/save and add to chart/i.test(label)) {
-          btns[i].click();
-          return 'Save and add to chart';
-        }
-        if (!addBtn && /^add to chart$/i.test(label)) addBtn = btns[i];
-        if (!updateBtn && /^update on chart$/i.test(label)) updateBtn = btns[i];
-        if (!saveBtn && btns[i].className.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) saveBtn = btns[i];
+        // Sanity bound: a legitimate Pine button label is short.
+        if (label.length > 30) continue;
+        if (!saveAddBtn && /save and add to chart/i.test(label)) saveAddBtn = b;
+        if (!addBtn && /^add to chart$/i.test(label)) addBtn = b;
+        if (!updateBtn && /^update on chart$/i.test(label)) updateBtn = b;
+        if (!saveBtn && (b.className || '').indexOf('saveButton') !== -1) saveBtn = b;
       }
+      if (saveAddBtn) { saveAddBtn.click(); return 'Save and add to chart'; }
       if (addBtn) { addBtn.click(); return 'Add to chart'; }
       if (updateBtn) { updateBtn.click(); return 'Update on chart'; }
       if (saveBtn) { saveBtn.click(); return 'Pine Save'; }
@@ -601,13 +668,39 @@ export async function smartCompile({ _deps } = {}) {
     (function() {
       try {
         var chart = window.TradingViewApi._activeChartWidgetWV.value();
-        if (chart && typeof chart.getAllStudies === 'function') return chart.getAllStudies().length;
+        if (chart && typeof chart.getAllStudies === 'function') {
+          return chart.getAllStudies().map(function(s) {
+            return { id: s.id, name: s.name || s.title || '' };
+          });
+        }
       } catch(e) {}
       return null;
     })()
   `);
 
-  const studyAdded = (studiesBefore !== null && studiesAfter !== null) ? studiesAfter > studiesBefore : null;
+  // Identify which studies were added by ID diff, then verify the new
+  // one's title matches the Pine script — that's "honest" study_added.
+  // If a study was added but its name doesn't match the editor title,
+  // it came from somewhere else (user clicked Indicators panel during
+  // compile, etc.) and we shouldn't claim our compile added it.
+  let studyAdded = null;
+  let newStudies = null;
+  let titleMatch = null;
+  if (Array.isArray(studiesBefore) && Array.isArray(studiesAfter)) {
+    const beforeIds = new Set(studiesBefore.map(s => s.id));
+    newStudies = studiesAfter.filter(s => !beforeIds.has(s.id));
+    if (newStudies.length === 0) {
+      studyAdded = false;
+    } else if (pineTitleBefore) {
+      const titleLower = pineTitleBefore.toLowerCase();
+      titleMatch = newStudies.find(s => (s.name || '').toLowerCase().includes(titleLower)) || null;
+      studyAdded = !!titleMatch;
+    } else {
+      // No editor title available — fall back to "any new study counts"
+      // semantics rather than reporting a false negative.
+      studyAdded = true;
+    }
+  }
 
   return {
     success: true,
@@ -615,6 +708,9 @@ export async function smartCompile({ _deps } = {}) {
     has_errors: errors?.length > 0,
     errors: errors || [],
     study_added: studyAdded,
+    pine_title: pineTitleBefore,
+    new_studies: newStudies,
+    matched_study: titleMatch,
     elapsed_ms: Date.now() - startedAt,
   };
 }

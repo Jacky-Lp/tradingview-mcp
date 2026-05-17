@@ -5,9 +5,9 @@ register('replay', {
   description: 'Replay mode controls',
   subcommands: new Map([
     ['start', {
-      description: 'Start replay mode',
+      description: 'Start replay mode (clears stale session state before jumping)',
       options: {
-        date: { type: 'string', short: 'd', description: 'Start date (YYYY-MM-DD)' },
+        date: { type: 'string', short: 'd', description: 'Replay target. YYYY-MM-DD = midnight UTC. For intraday: YYYY-MM-DDTHH:MM:SS+HH:MM (e.g., 2026-05-08T09:33:00-04:00 for 09:33 ET) or YYYY-MM-DDTHH:MM:SSZ' },
       },
       handler: (opts) => core.start({ date: opts.date }),
     }],

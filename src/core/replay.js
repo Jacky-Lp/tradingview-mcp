@@ -36,29 +36,81 @@ export async function start({ date, _deps } = {}) {
   const available = await evaluate(wv(`${rp}.isReplayAvailable()`));
   if (!available) throw new Error('Replay is not available for the current symbol/timeframe');
 
+  // Parse the date BEFORE clearing state, so a bad string doesn't strand
+  // TV with a half-cleared replay session. `new Date(str).getTime()`
+  // accepts both day-precision ("2026-05-08") and ISO-with-time
+  // ("2026-05-08T09:33:00-04:00", "2026-05-08T13:33:00Z"). For intraday
+  // targets (e.g., a specific bar at NY market open), the offset suffix
+  // is required — bare "YYYY-MM-DD" is parsed as midnight UTC.
+  let ts = null;
+  if (date) {
+    ts = new Date(date).getTime();
+    if (isNaN(ts)) {
+      throw new Error(
+        `Invalid date: "${date}". Accepted formats: YYYY-MM-DD (lands at midnight UTC), ` +
+        `YYYY-MM-DDTHH:MM:SS[+-]HH:MM (intraday with offset), or YYYY-MM-DDTHH:MM:SSZ (UTC).`
+      );
+    }
+  }
+
+  // If replay is already running, TV's selectDate is silently absorbed —
+  // the cursor stays at the cached position even with _replaySessionState
+  // nulled. Tear down the live session first (stopReplay + state clear),
+  // then engage selectDate cleanly. The 'AllCharts' replay mode + linking
+  // copy both need the reset; missing either leaves the cursor pinned.
+  const alreadyStarted = await evaluate(wv(`${rp}.isReplayStarted()`));
+  if (alreadyStarted && ts !== null) {
+    await evaluate(`
+      (function() {
+        var api = window.TradingViewApi && window.TradingViewApi._replayApi;
+        if (api) { try { api.stopReplay(); } catch(e) {} }
+      })()
+    `);
+    await evaluate(CLEAR_SESSION_STATE_JS);
+    // Brief pause to let TV's replay engine settle the teardown before
+    // we re-enter via showReplayToolbar + selectDate. Without this,
+    // selectDate occasionally races the stopReplay callback and lands
+    // on the pre-teardown cursor.
+    await new Promise(r => setTimeout(r, 300));
+  } else {
+    // Cold start (or re-call without a date) — just nuke any cached state
+    // so a "Continue your last replay?" dialog doesn't fight us.
+    await evaluate(CLEAR_SESSION_STATE_JS);
+  }
+
   await evaluate(`${rp}.showReplayToolbar()`);
 
   // selectDate() is async — it calls enableReplayMode() then _onPointSelected()
   // which initializes the server-side replay session. Must be awaited inside the
   // page context, otherwise the promise is fire-and-forget and replay state says
   // "started" but stepping doesn't work (issue #26).
-  if (date) {
-    const ts = new Date(date).getTime();
-    if (isNaN(ts)) throw new Error(`Invalid date: "${date}". Use YYYY-MM-DD format.`);
+  if (ts !== null) {
     await evaluate(`${rp}.selectDate(${ts}).then(function() { return 'ok'; })`);
   } else {
     await evaluate(`${rp}.selectFirstAvailableDate()`);
   }
 
-  // Poll until replay is fully initialized: isReplayStarted AND currentDate is set.
-  // selectDate()'s promise resolves before the data series is ready, so we need
-  // to wait for currentDate to become non-null before stepping will work.
+  // Poll until replay is fully initialized AND the cursor reflects the
+  // requested target. selectDate()'s promise resolves before the data
+  // series is ready. When re-jumping, currentDate is non-null immediately
+  // (carrying the previous session's value), so a plain "non-null" exit
+  // returns a stale cursor. With a target ts, wait until the cursor lands
+  // within one minute of the target (covers the bar-snap quantization).
+  // Without a target, wait for any non-null value.
   let started = false;
   let currentDate = null;
-  for (let i = 0; i < 30; i++) {
+  const tsSec = ts !== null ? Math.floor(ts / 1000) : null;
+  // 60s match window is intentionally tight — bar-snap quantization on
+  // any reasonable timeframe stays under this. Wider would mask the
+  // silent-clamp bug we just fixed.
+  const targetMatchSec = 60;
+  for (let i = 0; i < 40; i++) {
     started = await evaluate(wv(`${rp}.isReplayStarted()`));
     currentDate = await evaluate(wv(`${rp}.currentDate()`));
-    if (started && currentDate !== null) break;
+    if (started && currentDate !== null) {
+      if (tsSec === null) break;
+      if (Math.abs(currentDate - tsSec) <= targetMatchSec) break;
+    }
     await new Promise(r => setTimeout(r, 250));
   }
 
@@ -67,7 +119,43 @@ export async function start({ date, _deps } = {}) {
     throw new Error('Replay failed to start. The selected date may not have data for this timeframe. Try a more recent date or a higher timeframe (e.g., Daily).');
   }
 
-  return { success: true, replay_started: true, date: date || '(first available)', current_date: currentDate };
+  // Verify the cursor landed near the requested target. TV's selectDate
+  // silently clamps backward jumps when the target date isn't in the
+  // currently loaded bar buffer — the cursor stays at the previously-loaded
+  // last bar instead of fetching the older data. We can't fix this from
+  // CDP (no API to force a backward load), but we can surface it so the
+  // caller knows the jump didn't reach the target.
+  let driftSeconds = null;
+  let warning = null;
+  if (ts !== null && currentDate !== null) {
+    driftSeconds = Math.abs(currentDate - Math.floor(ts / 1000));
+    // 5 min tolerance — enough for the cursor to snap to the bar containing
+    // the requested instant (e.g., 1m chart: cursor lands at bar open,
+    // up to 60s earlier; 5m chart: up to 300s earlier). Anything beyond
+    // that almost certainly means TV silently clamped to the previous
+    // cursor or the requested time fell outside the loaded buffer.
+    if (driftSeconds > 300) {
+      const wanted = new Date(ts).toISOString();
+      const got = new Date(currentDate * 1000).toISOString();
+      warning = (
+        `Cursor landed at ${got} but you requested ${wanted} ` +
+        `(drift: ${driftSeconds}s). TV may have silently clamped a backward jump ` +
+        `to unloaded historical data, or the requested date falls outside the ` +
+        `current bar buffer. Try scrolling the chart back manually first, or use ` +
+        `a higher timeframe to load more history.`
+      );
+    }
+  }
+
+  return {
+    success: true,
+    replay_started: true,
+    date: date || '(first available)',
+    current_date: currentDate,
+    requested_ts: ts ? Math.floor(ts / 1000) : null,
+    drift_seconds: driftSeconds,
+    warning,
+  };
 }
 
 export async function step({ _deps } = {}) {

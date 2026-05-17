@@ -10,12 +10,13 @@ describe('core/chart.js — setSymbol verification (post-call retry)', () => {
   afterEach(() => resetCdpMocks());
   after(cleanupConnection);
 
-  it('test_setSymbol_throws_when_change_silently_failed', async () => {
-    // Simulate TV in a stuck state: setSymbol's IIFE returns OK but the
-    // actual symbol stays the same (reproducer for the cascading-failures
-    // scenario from saved replay state). The wrapper detects this, retries
-    // once after dismissing dialogs, then throws with SYMBOL_DID_NOT_CHANGE.
+  it('test_setSymbol_throws_when_change_silently_failed_even_after_hard_reload', async () => {
+    // Worst-case stuck state: dialog dismissal didn't help, hard reload
+    // (Page.reload) succeeded but TV is still pinned to the old symbol.
+    // The wrapper has tried everything — throws SYMBOL_DID_NOT_CHANGE with
+    // hard_reloaded:true so the caller knows recovery was attempted.
     let dismissedCalls = 0;
+    let reloadCalls = 0;
     installCdpMocks({
       evaluate: async (expr) => {
         if (typeof expr === 'string' && /\.symbol\(\)/.test(expr) && !expr.includes('setSymbol')) {
@@ -32,6 +33,8 @@ describe('core/chart.js — setSymbol verification (post-call retry)', () => {
           waitForChartReady: async () => true,
           waitForStudiesReady: async () => true,
           dismissBlockingDialogs: async () => { dismissedCalls++; return [{ note: 'leave_replay', button: 'Leave' }]; },
+          getClient: async () => ({ Page: { reload: async () => { reloadCalls++; } } }),
+          disconnect: async () => {},
         },
       }),
       (err) => {
@@ -39,10 +42,128 @@ describe('core/chart.js — setSymbol verification (post-call retry)', () => {
         assert.equal(err.requested, 'NASDAQ:AAPL');
         assert.equal(err.actual, 'CME_MINI:ESM2026');
         assert.deepEqual(err.dismissed_dialogs, [{ note: 'leave_replay', button: 'Leave' }]);
+        assert.equal(err.hard_reloaded, true);
         return true;
       },
     );
     assert.equal(dismissedCalls, 1, 'dismissBlockingDialogs invoked exactly once on retry');
+    assert.equal(reloadCalls, 1, 'Page.reload invoked exactly once as last-resort');
+  });
+
+  it('test_setSymbol_recovers_from_error_overlay_via_hard_reload', async () => {
+    // The "JS API matches but chart shows error overlay" case: chart.symbol()
+    // returns the requested symbol so the dialog-dismiss path is skipped,
+    // but the chart canvas shows "This symbol doesn't exist". setSymbol
+    // escalates straight to hard reload, which clears the overlay.
+    let reloaded = false;
+    let reloadCalls = 0;
+    installCdpMocks({
+      evaluate: async (expr) => {
+        if (typeof expr === 'string' && /getAllStudies/.test(expr)) {
+          return [];
+        }
+        if (typeof expr === 'string' && /\.symbol\(\)/.test(expr) && !expr.includes('setSymbol')) {
+          // JS API matches from the start — this is the trickier stuck state
+          return 'CME_MINI:NQM2026';
+        }
+        if (typeof expr === 'string' && /errorCard|noDataHere/.test(expr)) {
+          // Overlay detection: present before reload, gone after
+          return reloaded ? null : "This symbol doesn't exist";
+        }
+        return undefined;
+      },
+      evaluateAsync: async () => undefined,
+    });
+    const r = await chart.setSymbol({
+      symbol: 'CME_MINI:NQM2026',
+      _deps: {
+        waitForChartReady: async () => true,
+        waitForStudiesReady: async () => true,
+        dismissBlockingDialogs: async () => [],
+        getClient: async () => ({
+          Page: { reload: async () => { reloadCalls++; reloaded = true; } },
+        }),
+        disconnect: async () => {},
+      },
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.symbol, 'CME_MINI:NQM2026');
+    assert.equal(r.hard_reloaded, true);
+    assert.equal(reloadCalls, 1, 'hard reload fired once');
+  });
+
+  it('test_setSymbol_throws_SYMBOL_LOAD_ERROR_when_overlay_persists', async () => {
+    // Overlay stays even after hard reload — caller gets the distinct
+    // SYMBOL_LOAD_ERROR code so they can route it differently from the
+    // JS-API-mismatch case.
+    installCdpMocks({
+      evaluate: async (expr) => {
+        if (typeof expr === 'string' && /getAllStudies/.test(expr)) return [];
+        if (typeof expr === 'string' && /\.symbol\(\)/.test(expr) && !expr.includes('setSymbol')) {
+          return 'CME_MINI:NQM2026';
+        }
+        if (typeof expr === 'string' && /errorCard|noDataHere/.test(expr)) {
+          return "This symbol doesn't exist"; // never clears
+        }
+        return undefined;
+      },
+      evaluateAsync: async () => undefined,
+    });
+    await assert.rejects(
+      chart.setSymbol({
+        symbol: 'CME_MINI:NQM2026',
+        _deps: {
+          waitForChartReady: async () => true,
+          waitForStudiesReady: async () => true,
+          dismissBlockingDialogs: async () => [],
+          getClient: async () => ({ Page: { reload: async () => {} } }),
+          disconnect: async () => {},
+        },
+      }),
+      (err) => {
+        assert.equal(err.code, 'SYMBOL_LOAD_ERROR');
+        assert.equal(err.error_overlay, "This symbol doesn't exist");
+        assert.equal(err.hard_reloaded, true);
+        return true;
+      },
+    );
+  });
+
+  it('test_setSymbol_recovers_via_hard_reload', async () => {
+    // Stuck through both the first attempt and dialog dismissal; only the
+    // hard reload (Page.reload) breaks the stuck state. Mock flips
+    // chart.symbol() to the requested value only after reload runs.
+    let reloaded = false;
+    let reloadCalls = 0;
+    installCdpMocks({
+      evaluate: async (expr) => {
+        if (typeof expr === 'string' && /getAllStudies/.test(expr)) {
+          return [{ id: 's1', name: 'RSI' }];
+        }
+        if (typeof expr === 'string' && /\.symbol\(\)/.test(expr) && !expr.includes('setSymbol')) {
+          return reloaded ? 'NASDAQ:AAPL' : 'CME_MINI:ESM2026';
+        }
+        return undefined;
+      },
+      evaluateAsync: async () => undefined,
+    });
+    const r = await chart.setSymbol({
+      symbol: 'NASDAQ:AAPL',
+      _deps: {
+        waitForChartReady: async () => true,
+        waitForStudiesReady: async () => true,
+        dismissBlockingDialogs: async () => [{ note: 'leave_replay', button: 'Leave' }],
+        getClient: async () => ({
+          Page: { reload: async () => { reloadCalls++; reloaded = true; } },
+        }),
+        disconnect: async () => {},
+      },
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.symbol, 'NASDAQ:AAPL');
+    assert.equal(r.hard_reloaded, true);
+    assert.deepEqual(r.prior_studies, [{ id: 's1', name: 'RSI' }]);
+    assert.equal(reloadCalls, 1);
   });
 
   it('test_setSymbol_succeeds_when_actual_matches_after_normalize', async () => {
@@ -71,17 +192,16 @@ describe('core/chart.js — setSymbol verification (post-call retry)', () => {
   });
 
   it('test_setSymbol_succeeds_after_retry_dismissing_dialog', async () => {
-    // First .symbol() check returns the old symbol (TV stuck on a dialog).
-    // Dialog dismissed → retry sets the symbol → second .symbol() returns
-    // the new value. The retry path takes the wrapper to success.
-    let symbolCalls = 0;
+    // Stage-based mock: chart.symbol() stays stuck until dismissBlockingDialogs
+    // runs, at which point the dialog is "closed" and TV finally applies the
+    // pending symbol switch. This reproduces the path where a Leave-replay
+    // dialog absorbed the change and dismissing it lets the retry succeed.
+    let dialogDismissed = false;
     let dismissedCalls = 0;
     installCdpMocks({
       evaluate: async (expr) => {
         if (typeof expr === 'string' && /\.symbol\(\)/.test(expr) && !expr.includes('setSymbol')) {
-          symbolCalls++;
-          if (symbolCalls === 1) return 'CME_MINI:ESM2026';  // before retry: stuck
-          return 'NASDAQ:AAPL';                              // after retry: changed
+          return dialogDismissed ? 'NASDAQ:AAPL' : 'CME_MINI:ESM2026';
         }
         return undefined;
       },
@@ -92,7 +212,11 @@ describe('core/chart.js — setSymbol verification (post-call retry)', () => {
       _deps: {
         waitForChartReady: async () => true,
         waitForStudiesReady: async () => true,
-        dismissBlockingDialogs: async () => { dismissedCalls++; return [{ note: 'leave_replay', button: 'Leave' }]; },
+        dismissBlockingDialogs: async () => {
+          dismissedCalls++;
+          dialogDismissed = true;
+          return [{ note: 'leave_replay', button: 'Leave' }];
+        },
       },
     });
     assert.equal(r.success, true);

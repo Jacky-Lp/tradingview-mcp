@@ -1,7 +1,7 @@
 /**
  * Core chart control logic.
  */
-import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, safeString, requireFinite } from '../connection.js';
+import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, safeString, requireFinite, getClient as _getClient, disconnect as _disconnect } from '../connection.js';
 import { waitForChartReady as _waitForChartReady, waitForStudiesReady as _waitForStudiesReady } from '../wait.js';
 import { dismissBlockingDialogs as _dismissBlockingDialogs } from './dialog.js';
 
@@ -14,7 +14,29 @@ function _resolve(deps) {
     waitForChartReady: deps?.waitForChartReady || _waitForChartReady,
     waitForStudiesReady: deps?.waitForStudiesReady || _waitForStudiesReady,
     dismissBlockingDialogs: deps?.dismissBlockingDialogs || _dismissBlockingDialogs,
+    getClient: deps?.getClient || _getClient,
+    disconnect: deps?.disconnect || _disconnect,
   };
+}
+
+// Hard reload the TradingView tab. Last-resort recovery when setSymbol is
+// stuck in a state that dialog dismissal can't break (cumulative replay
+// side effects, half-applied symbol switches). Wipes all studies, drawings,
+// and replay state — caller must re-add studies after this returns.
+// Mirrors the pattern in core/health.js reconnect().
+async function _hardReload({ getClient, disconnect, waitForChartReady }) {
+  const c = await getClient();
+  try { await c.Page.reload({ ignoreCache: false }); }
+  catch { /* reload can drop the CDP WS — expected */ }
+  await disconnect();
+  // TV needs ~3s after reload before its CDP target re-accepts attaches;
+  // a tighter wait races the renderer and surfaces as a connect retry storm.
+  await new Promise(r => setTimeout(r, 3000));
+  await getClient();
+  // 20s ceiling — TV with many studies + a slow data feed can take >10s
+  // to repaint after reload. waitForChartReady polls until the loading
+  // spinner clears and bar count stabilizes.
+  return await waitForChartReady(null, null, 20000);
 }
 
 /**
@@ -53,8 +75,14 @@ export async function getState({ _deps } = {}) {
 }
 
 export async function setSymbol({ symbol, _deps }) {
-  const { evaluate, evaluateAsync, waitForChartReady, waitForStudiesReady, dismissBlockingDialogs } = _resolve(_deps);
+  const { evaluate, evaluateAsync, waitForChartReady, waitForStudiesReady, dismissBlockingDialogs, getClient, disconnect } = _resolve(_deps);
 
+  // Trigger the symbol switch; don't gate on DOM readiness here.
+  // `waitForChartReady` does a DOM-legend substring match that fails when
+  // the caller passes a prefixed symbol ("CME_MINI:NQU2026") while the
+  // legend shows the bare form ("NQU2026") — surfaced as a false stuck
+  // state on the first attempt. Authoritative check is the JS API
+  // chart.symbol() poll below.
   async function _doSetSymbol() {
     await evaluateAsync(`
       (function() {
@@ -65,40 +93,146 @@ export async function setSymbol({ symbol, _deps }) {
         });
       })()
     `);
-    return await waitForChartReady(symbol);
   }
 
-  // First attempt
-  let ready = await _doSetSymbol();
-  let actual = await evaluate(`${CHART_API}.symbol()`);
-  let dismissedDialogs = [];
+  // Poll chart.symbol() until it matches the requested symbol (with the
+  // exchange-prefix normalization rules from _symbolMatches) or the
+  // timeout elapses. Returns the final actual value either way.
+  async function _waitForSymbolMatch(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    let actual = await evaluate(`${CHART_API}.symbol()`);
+    while (!_symbolMatches(symbol, actual) && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 250));
+      actual = await evaluate(`${CHART_API}.symbol()`);
+    }
+    return actual;
+  }
 
-  // If the symbol didn't actually change, TV likely popped a blocking modal
-  // (Leave current replay / Continue your last replay / Save script /
-  // unsaved changes) that absorbed the change request. Dismiss whatever's
-  // open and retry once.
+  // Detect the "This symbol doesn't exist" / "No data here" overlay that
+  // TV draws when the chart's data fetch failed but the JS API still
+  // reports the requested symbol — chart.symbol() matches, yet the user
+  // sees a broken chart. Bounded text scan (length-capped, narrow
+  // selectors first) keeps it cheap. Returns the matched message or null.
+  async function _detectSymbolErrorOverlay() {
+    try {
+      return await evaluate(`
+        (function() {
+          var patterns = [
+            /This symbol doesn'?t exist/i,
+            /Symbol not found/i,
+            /No data (here|available for this symbol)/i,
+            /Invalid symbol/i,
+          ];
+          // Narrow: TV's no-data overlay sits in the chart canvas area
+          // under classes like "errorCard"/"noDataHere"/"emptyState". A
+          // wider scan would flood with editor and tooltip text.
+          var candidates = document.querySelectorAll(
+            '[class*="errorCard"], [class*="noDataHere"], [class*="emptyState"], ' +
+            '[class*="error-message"], [class*="errorMessage"], [class*="noData"]'
+          );
+          for (var i = 0; i < candidates.length; i++) {
+            var el = candidates[i];
+            if (el.offsetParent === null) continue;
+            var text = el.textContent || '';
+            if (text.length > 400) continue;
+            for (var p = 0; p < patterns.length; p++) {
+              if (patterns[p].test(text)) return text.trim().slice(0, 200);
+            }
+          }
+          return null;
+        })()
+      `);
+    } catch { return null; }
+  }
+
+  // Capture pre-switch state — if we end up hard-reloading, the caller
+  // needs to know what was wiped to restore studies.
+  let priorStudies = [];
+  try {
+    priorStudies = await evaluate(`
+      (function() {
+        try {
+          var chart = ${CHART_API};
+          return (chart.getAllStudies() || []).map(function(s) {
+            return { id: s.id, name: s.name || s.title || 'unknown' };
+          });
+        } catch(e) { return []; }
+      })()
+    `) || [];
+  } catch { /* best effort */ }
+
+  // "Healthy load" = JS API matches AND no error overlay is visible. The
+  // overlay case is the stuck state where chart.symbol() returns the
+  // requested value but TV's data fetch failed — IDEAS line 92-101.
+  async function _checkHealthy(timeoutMs) {
+    const actualNow = await _waitForSymbolMatch(timeoutMs);
+    const overlay = _symbolMatches(symbol, actualNow) ? await _detectSymbolErrorOverlay() : null;
+    return { actual: actualNow, overlay };
+  }
+
+  // First attempt — 8s window covers a typical cold contract-data fetch.
+  await _doSetSymbol();
+  let { actual, overlay: errorOverlay } = await _checkHealthy(8000);
+  let dismissedDialogs = [];
+  let hardReloaded = false;
+
+  // If the JS API didn't reflect the change, TV likely popped a blocking
+  // modal (Leave current replay / Continue your last replay / Save script
+  // / unsaved changes) that absorbed the change request. Dismiss whatever's
+  // open and retry once. (An error overlay alone — JS API already matches —
+  // skips this step because dismissing a dialog won't refetch the chart
+  // data; hard reload is the only recovery for that case.)
   if (!_symbolMatches(symbol, actual)) {
     try { dismissedDialogs = await dismissBlockingDialogs({ evaluate }); } catch {}
-    await new Promise(r => setTimeout(r, 500));
-    ready = await _doSetSymbol();
-    actual = await evaluate(`${CHART_API}.symbol()`);
+    await _doSetSymbol();
+    ({ actual, overlay: errorOverlay } = await _checkHealthy(8000));
   }
 
-  if (!_symbolMatches(symbol, actual)) {
+  // Last-resort: hard reload. Triggers on either (a) JS API still wrong,
+  // or (b) JS API matches but chart shows the error overlay. Page.reload
+  // is the only path that consistently breaks both stuck states. Wipes
+  // studies and replay state — caller is told via hard_reloaded:true.
+  if (!_symbolMatches(symbol, actual) || errorOverlay) {
+    try {
+      await _hardReload({ getClient, disconnect, waitForChartReady });
+      hardReloaded = true;
+      await _doSetSymbol();
+      ({ actual, overlay: errorOverlay } = await _checkHealthy(12000)); // post-reload TV is slower
+    } catch (reloadErr) {
+      const err = new Error(
+        `setSymbol failed: requested "${symbol}" but chart symbol is "${actual}"` +
+        (errorOverlay ? ` (chart shows error: "${errorOverlay}")` : '') +
+        `. Hard reload also failed: ${reloadErr.message}.`
+      );
+      err.code = 'SYMBOL_DID_NOT_CHANGE';
+      err.requested = symbol;
+      err.actual = actual;
+      err.dismissed_dialogs = dismissedDialogs;
+      err.error_overlay = errorOverlay;
+      err.hard_reload_attempted = true;
+      throw err;
+    }
+  }
+
+  if (!_symbolMatches(symbol, actual) || errorOverlay) {
     const err = new Error(
-      `setSymbol failed: requested "${symbol}" but chart symbol is "${actual}". ` +
-      (dismissedDialogs.length
-        ? `Dismissed dialogs (${dismissedDialogs.map(d => d.note).join(', ')}) on retry but the change still didn't take. `
-        : `No blocking dialog was detected. `) +
-      `TV may be in a stuck saved-replay state — try replay_stop or restarting TV.`
+      `setSymbol failed: requested "${symbol}" but chart symbol is "${actual}"` +
+      (errorOverlay ? ` (chart shows error: "${errorOverlay}")` : '') +
+      ` even after dialog dismissal${hardReloaded ? ' and hard reload' : ''}. ` +
+      `TV may be unresponsive — try tv_health_check.`
     );
-    err.code = 'SYMBOL_DID_NOT_CHANGE';
+    err.code = errorOverlay ? 'SYMBOL_LOAD_ERROR' : 'SYMBOL_DID_NOT_CHANGE';
     err.requested = symbol;
     err.actual = actual;
     err.dismissed_dialogs = dismissedDialogs;
+    err.error_overlay = errorOverlay;
+    err.hard_reloaded = hardReloaded;
     throw err;
   }
 
+  // Best-effort DOM settle for callers about to scrape the legend/studies.
+  // Not gating — chart.symbol() already confirmed the switch landed.
+  const ready = await waitForChartReady(symbol);
   const studies_ready = await waitForStudiesReady();
   return {
     success: true,
@@ -107,6 +241,8 @@ export async function setSymbol({ symbol, _deps }) {
     chart_ready: ready,
     studies_ready,
     dismissed_dialogs: dismissedDialogs.length ? dismissedDialogs : undefined,
+    hard_reloaded: hardReloaded || undefined,
+    prior_studies: hardReloaded ? priorStudies : undefined,
   };
 }
 

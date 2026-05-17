@@ -3,8 +3,8 @@ import { jsonResult } from './_format.js';
 import * as core from '../core/replay.js';
 
 export function registerReplayTools(server) {
-  server.tool('replay_start', 'Start bar replay mode, optionally at a specific date', {
-    date: z.string().optional().describe('Date to start replay from (YYYY-MM-DD format). If omitted, selects first available date.'),
+  server.tool('replay_start', 'Start bar replay mode, optionally at a specific date or intraday timestamp. Clears any cached replay session state before jumping so a re-call always moves the cursor to the new target. Returns warning if cursor drifted >1h from requested (TV silently clamps backward jumps to unloaded data).', {
+    date: z.string().optional().describe('Replay target. Day-precision "YYYY-MM-DD" lands at midnight UTC. For intraday (e.g., NY market open at 09:33 ET), pass ISO with offset: "2026-05-08T09:33:00-04:00" or "2026-05-08T13:33:00Z". If omitted, selects first available date.'),
   }, async ({ date }) => {
     try { return jsonResult(await core.start({ date })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }

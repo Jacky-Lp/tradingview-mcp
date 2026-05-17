@@ -31,8 +31,9 @@ register('data', {
       options: {
         filter: { type: 'string', short: 'f', description: 'Filter by study name substring' },
         verbose: { type: 'boolean', short: 'v', description: 'Include raw line data' },
+        'include-empty': { type: 'boolean', description: 'Include loaded studies that drew zero lines (distinguishes inactive from not-loaded)' },
       },
-      handler: (opts) => core.getPineLines({ study_filter: opts.filter, verbose: opts.verbose }),
+      handler: (opts) => core.getPineLines({ study_filter: opts.filter, verbose: opts.verbose, include_empty: opts['include-empty'] }),
     }],
     ['labels', {
       description: 'Get Pine Script label.new() annotations',
@@ -40,23 +41,26 @@ register('data', {
         filter: { type: 'string', short: 'f', description: 'Filter by study name substring' },
         max: { type: 'string', short: 'n', description: 'Max labels per study (default 50)' },
         verbose: { type: 'boolean', short: 'v', description: 'Include raw label data' },
+        'include-empty': { type: 'boolean', description: 'Include loaded studies that drew zero labels' },
       },
-      handler: (opts) => core.getPineLabels({ study_filter: opts.filter, max_labels: opts.max ? Number(opts.max) : undefined, verbose: opts.verbose }),
+      handler: (opts) => core.getPineLabels({ study_filter: opts.filter, max_labels: opts.max ? Number(opts.max) : undefined, verbose: opts.verbose, include_empty: opts['include-empty'] }),
     }],
     ['tables', {
       description: 'Get Pine Script table.new() data',
       options: {
         filter: { type: 'string', short: 'f', description: 'Filter by study name substring' },
+        'include-empty': { type: 'boolean', description: 'Include loaded studies that have no tables' },
       },
-      handler: (opts) => core.getPineTables({ study_filter: opts.filter }),
+      handler: (opts) => core.getPineTables({ study_filter: opts.filter, include_empty: opts['include-empty'] }),
     }],
     ['boxes', {
       description: 'Get Pine Script box.new() price zones',
       options: {
         filter: { type: 'string', short: 'f', description: 'Filter by study name substring' },
         verbose: { type: 'boolean', short: 'v', description: 'Include raw box data' },
+        'include-empty': { type: 'boolean', description: 'Include loaded studies that drew zero boxes' },
       },
-      handler: (opts) => core.getPineBoxes({ study_filter: opts.filter, verbose: opts.verbose }),
+      handler: (opts) => core.getPineBoxes({ study_filter: opts.filter, verbose: opts.verbose, include_empty: opts['include-empty'] }),
     }],
     ['strategy', {
       description: 'Get strategy performance metrics',

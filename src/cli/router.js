@@ -50,8 +50,22 @@ function printCommandHelp(name, cmd) {
   }
 }
 
+/**
+ * Shield leading-hyphen-digit positionals (e.g. indicator names like
+ * "-4 CB Model Indicator") from parseArgs, which would parse `-4` as a
+ * short flag. Inserts `--` before the first such arg unless the caller
+ * already supplied one. Safe because no command defines a `-N` flag —
+ * all our short options are `-<letter>`.
+ */
+function shieldNegativePositionals(args) {
+  if (args.includes('--')) return args;
+  const idx = args.findIndex(a => /^-\d/.test(a));
+  if (idx === -1) return args;
+  return [...args.slice(0, idx), '--', ...args.slice(idx)];
+}
+
 export async function run(argv) {
-  const args = argv.slice(2);
+  const args = shieldNegativePositionals(argv.slice(2));
 
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
     printHelp();

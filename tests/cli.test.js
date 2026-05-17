@@ -108,6 +108,24 @@ describe('CLI — help and routing', () => {
     assert.equal(exitCode, 1);
     assert.ok(stderr.includes('Index required'));
   });
+
+  // Regression: leading-hyphen indicator names like "-4 CB Model" used to
+  // error with "Indicator name required" because parseArgs ate the -4 as
+  // a flag. The router now auto-shields ^-\d args with `--`. We can't run
+  // a real add (no TV), but the error we expect is from a deeper layer —
+  // either "CDP connection failed" (no TV running in CI) or a JS evaluation
+  // error — proving the name made it through parseArgs.
+  it('indicator add with leading-hyphen name passes through parser', () => {
+    const { stderr, exitCode } = run(['indicator', 'add', '-4 CB Model Indicator']);
+    // exitCode 2 = CDP connection failure (no TV in CI); exitCode 1 with
+    // JS-evaluation error also acceptable. Critically, it MUST NOT be
+    // the "Indicator name required" CLI parser error.
+    assert.notEqual(exitCode, 0);
+    assert.ok(
+      !stderr.includes('Indicator name required'),
+      `Expected indicator name to pass through; got: ${stderr.slice(0, 200)}`,
+    );
+  });
 });
 
 describe('CLI — pine analyze (offline)', () => {

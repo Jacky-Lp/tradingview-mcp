@@ -319,6 +319,44 @@ describe('core/data.js — smoke', () => {
     assert.equal(r.studies[0].horizontal_levels.length, 2);
   });
 
+  it('test_getPineLines_include_empty_propagates_to_iife', async () => {
+    // include_empty:true should produce IIFE source that injects `true`
+    // into the count gate so empty studies (loaded but drew nothing) come
+    // back as { name, total_lines: 0, horizontal_levels: [] } instead of
+    // being filtered out.
+    let capturedExpr = null;
+    installCdpMocks({
+      evaluate: async (expr) => {
+        capturedExpr = expr;
+        // Simulate an inert study: count 0, no items.
+        return [{ name: 'CB Model', count: 0, items: [] }];
+      },
+    });
+    const r = await data.getPineLines({ study_filter: 'CB Model', include_empty: true });
+    assert.equal(r.success, true);
+    assert.equal(r.study_count, 1, 'inert study surfaced');
+    assert.equal(r.studies[0].name, 'CB Model');
+    assert.equal(r.studies[0].total_lines, 0);
+    assert.deepEqual(r.studies[0].horizontal_levels, []);
+    // IIFE should contain the literal `true` in the count gate
+    assert.ok(/totalCount > 0 \|\| true/.test(capturedExpr), 'include_empty:true sets the gate');
+  });
+
+  it('test_getPineLines_default_filters_empty_studies', async () => {
+    let capturedExpr = null;
+    installCdpMocks({
+      evaluate: async (expr) => {
+        capturedExpr = expr;
+        // Without include_empty the IIFE wouldn't push the inert study,
+        // so simulate that by returning empty array.
+        return [];
+      },
+    });
+    const r = await data.getPineLines({ study_filter: 'CB Model' });
+    assert.equal(r.study_count, 0);
+    assert.ok(/totalCount > 0 \|\| false/.test(capturedExpr), 'default sets gate to false');
+  });
+
   it('test_getPineLabels_smoke', async () => {
     installCdpMocks({
       evaluate: async () => [{

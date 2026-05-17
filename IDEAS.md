@@ -118,11 +118,11 @@ below. Each one blocked work in this session — listed in rough priority order.
   `--scroll-back` option that simulates UI mouse-wheel pans to force backward
   loads.
 
-- **`_replayUIController.disableReplayMode()` doesn't actually stop replay.**
-  `isReplayStarted()` keeps returning `true` after calling it. Need to also
-  call `_replayManager.stopReplay()` and null `_replaySessionState`. Affects
-  any caller trying to "reset to realtime" without going through
-  `tv replay stop`.
+- ~~**`_replayUIController.disableReplayMode()` doesn't actually stop replay.**~~ —
+  Informational only; our `core/replay.js stop()` already calls
+  `stopReplay()` + `goToRealtime()` + clears `_replaySessionState` on both
+  paths. The cited bug only affects callers who reach for
+  `disableReplayMode` directly, which we don't.
 
 ### Chart / symbol
 
@@ -137,14 +137,11 @@ below. Each one blocked work in this session — listed in rough priority order.
   the reload, OR have `setSymbol`'s retry path auto-trigger a hard reload
   after the dialog-dismissal retry also fails.
 
-- **`tv tab switch <n>` doesn't propagate to subsequent commands.** After
-  switching tabs, `tv state` still returns the OLD tab's symbol/studies.
-  Re-attaching the CDP target after switch isn't happening or isn't taking
-  effect immediately. Tested with 8 tabs all on NQ futures; `tab switch`
-  returned `{success: true, index: N}` but state remained pinned to tab 0's
-  view. Workaround: pass `TV_TARGET_CHART_ID` env var to pin a specific
-  chart-id at command time. Investigate whether `switchTab`'s
-  `connectToTarget` is racing with the cached CDP client.
+- ~~**`tv tab switch <n>` doesn't propagate to subsequent commands.**~~ —
+  Verified working 2026-05-17: `tab switch 2` to `N6mimYXe` chart followed
+  by `state` correctly returned NQM2026/60m on the new tab. Either the
+  reproducer is intermittent (related to CDP cache liveness) or this got
+  fixed incidentally. Reopen only if it regresses.
 
 - ~~**`tv tab new` (Ctrl+T via `Input.dispatchKeyEvent`) doesn't reliably
   create a new tab.**~~ — Shipped 2026-05-17. Fixed by triggering the
@@ -189,14 +186,9 @@ below. Each one blocked work in this session — listed in rough priority order.
 
 ### Pine indicator data extraction
 
-- **Pine `line` primitives expose `y1`/`y2` directly on the primitive object,
-  NOT under `.v`.** The wiki entry at `~/ai/wiki/vendors/tradingview-desktop.md`
-  documents `p.v.y1` — but on TV Desktop 3.1.0.7818 the actual structure is
-  `{id, x1, y1, x2, y2, ex, st, ci, w}` directly on `p`. The MCP's
-  `data lines` returns line price levels by deduping but the verbose mode
-  may rely on the wrong path. Wiki entry needs correction. (Verified by
-  reading `study._graphics._primitivesCollection.dwglines.get('lines').get(false)._primitivesDataById`
-  on a working chart.)
+- ~~**Pine `line` primitives expose `y1`/`y2` directly on the primitive object, NOT under `.v`.**~~ —
+  Wiki and code both clean as of 2026-05-17. Grep confirms no `.v.y1` path
+  in the wiki; `buildGraphicsJS` reads `v.y1` directly. Already fixed.
 
 - **`tv data lines -f "..."` returns empty study list when indicator hasn't
   yet drawn lines.** For session-triggered indicators (like `-4 CB Model`),

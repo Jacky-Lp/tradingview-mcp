@@ -33,8 +33,9 @@ const BARS_PATH = KNOWN_PATHS.mainSeriesBars;
 // `count` separately so callers know how much was truncated.
 const DEFAULT_GRAPHICS_ITEM_CAP = 5000;
 
-function buildGraphicsJS(collectionName, mapKey, filter, maxItems) {
+function buildGraphicsJS(collectionName, mapKey, filter, maxItems, includeEmpty) {
   const cap = Math.max(1, Number(maxItems) || DEFAULT_GRAPHICS_ITEM_CAP);
+  const incEmpty = includeEmpty ? 'true' : 'false';
   return `
     (function() {
       var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
@@ -117,7 +118,13 @@ function buildGraphicsJS(collectionName, mapKey, filter, maxItems) {
             } catch(e) {}
           }
           if (items.length > maxItems) items = items.slice(-maxItems);
-          if (totalCount > 0) results.push({name: name, count: totalCount, items: items, truncated: totalCount > items.length});
+          // include_empty=true keeps the study in the result even when it
+          // drew nothing — lets callers distinguish "loaded but inactive"
+          // (e.g. session-triggered indicator before its trigger fires)
+          // from "not loaded at all".
+          if (totalCount > 0 || ${incEmpty}) {
+            results.push({name: name, count: totalCount, items: items, truncated: totalCount > items.length});
+          }
         } catch(e) {}
       }
       return results;
@@ -653,10 +660,10 @@ export async function getStudyValues({ study_filter, _deps } = {}) {
   return { success: true, study_count: data?.length || 0, studies: data || [] };
 }
 
-export async function getPineLines({ study_filter, verbose, _deps } = {}) {
+export async function getPineLines({ study_filter, verbose, include_empty, _deps } = {}) {
   const { evaluate } = _resolve(_deps);
   const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwglines', 'lines', filter));
+  const raw = await evaluate(buildGraphicsJS('dwglines', 'lines', filter, undefined, include_empty));
   if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
 
   const studies = raw.map(s => {
@@ -678,21 +685,21 @@ export async function getPineLines({ study_filter, verbose, _deps } = {}) {
   return { success: true, study_count: studies.length, studies };
 }
 
-export async function getPineLabels({ study_filter, max_labels, verbose, since, until, _deps } = {}) {
+export async function getPineLabels({ study_filter, max_labels, verbose, since, until, include_empty, _deps } = {}) {
   const { evaluate } = _resolve(_deps);
   const filter = study_filter || '';
   const limit = max_labels || 50;
-  const raw = await evaluate(buildGraphicsJS('dwglabels', 'labels', filter, limit));
+  const raw = await evaluate(buildGraphicsJS('dwglabels', 'labels', filter, limit, include_empty));
   if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
 
   const studies = formatPineLabels(raw, limit, verbose, since, until);
   return { success: true, study_count: studies.length, studies };
 }
 
-export async function getPineTables({ study_filter, _deps } = {}) {
+export async function getPineTables({ study_filter, include_empty, _deps } = {}) {
   const { evaluate } = _resolve(_deps);
   const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwgtablecells', 'tableCells', filter));
+  const raw = await evaluate(buildGraphicsJS('dwgtablecells', 'tableCells', filter, undefined, include_empty));
   if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
 
   const studies = raw.map(s => {
@@ -835,10 +842,10 @@ export async function getPineShapes({ study_filter, last_n_bars, _deps } = {}) {
   return { success: true, study_count: studies.length, studies };
 }
 
-export async function getPineBoxes({ study_filter, verbose, _deps } = {}) {
+export async function getPineBoxes({ study_filter, verbose, include_empty, _deps } = {}) {
   const { evaluate } = _resolve(_deps);
   const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwgboxes', 'boxes', filter));
+  const raw = await evaluate(buildGraphicsJS('dwgboxes', 'boxes', filter, undefined, include_empty));
   if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
 
   const studies = raw.map(s => {

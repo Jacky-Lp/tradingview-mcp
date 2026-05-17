@@ -54,14 +54,26 @@ below. Each one blocked work in this session — listed in rough priority order.
 
 ### Shipped 2026-05-17
 
+- **`FIND_MONACO` restored on TV 3.1.0.7818** — `window.monaco` is
+  unexposed and the React fiber's `value.monacoEnv` path is gone, but
+  TV's webpack chunk array (`window.webpackChunktradingview`) still
+  contains the monaco namespace. FIND_MONACO now extracts it by pushing
+  a synthetic chunk whose runtime callback scans `__webpack_require__`'s
+  module map for one exporting `editor.getEditors`, caches the namespace
+  on `window.__tvMonaco`, and uses `monaco.editor.getEditors()` to find
+  the Pine editor instance. ~100 ms one-time cost, then ~free per call.
+  New `MONACO_PINE_EDITOR_AVAILABLE` probe returns boolean only — never
+  the editor reference — because CDP's `returnByValue:true` chokes on
+  the editor object with "Object reference chain is too long". Restores
+  `pine_open`, `pine_save`, `pine_compile`, `pine_set_source`,
+  `pine_get_source` and the `chart_manage_indicator USER;<id>` path.
 - **`chart_manage_indicator` USER;<scriptIdPart> routing** — passing
-  a `USER;<hash>` form (from `pine_list_scripts`) now routes through the
+  a `USER;<hash>` form (from `pine_list_scripts`) routes through the
   Pine editor: open script via pine-facade by ID → smart_compile clicks
   Add to chart → diff studies to surface the new entity_id. `openScript`
-  extended to accept `id` in addition to `name`. Smoke test verifies the
-  routing fires and does NOT call `chart.createStudy`. Live-blocked by
-  the separate FIND_MONACO regression (see "Blocked / regression" below);
-  routing is correct.
+  extended to accept `id` in addition to `name`. Live-validated end-to-
+  end: added `-4 CB Model Indicator` via id `USER;9ec0639b...` →
+  entity_id `jNavdo` on BATS:NVDA chart, clean compile, no errors.
 - **`tv repl` persistent CDP session** — `tv repl` reads commands from
   stdin and writes one JSON-per-line to stdout, reusing a single CDP
   client across all commands. Live-measured: cold first command 123 ms,
@@ -131,22 +143,6 @@ below. Each one blocked work in this session — listed in rough priority order.
   when drift > 5 min (catches the silent-clamp-to-unloaded-data symptom).
   Live-validated 09:33 ET / 10:30 / 11:30 ET jumps round-trip with drift
   1 s on NQM2026 60 m.
-
-### Blocked / regression — needs reverse-engineering
-
-- **`FIND_MONACO` no longer locates Monaco editors on TV 3.1.0.7818.**
-  `window.monaco` is unexposed (documented). The React fiber walk used
-  to reach `props.value.monacoEnv.editor` — but the fiber tree has
-  shifted: walking up from `.monaco-editor.pine-editor-monaco` for 25
-  levels, then 25 fiber returns deep, finds no `getEditors`. The Pine
-  editor IS visible (`[data-qa-id="pine-editor-dialog"]` present),
-  candles render, but `pine.openScript`, `pine.smartCompile`,
-  `pine.setSource`, `pine.getSource` all fail at `ensurePineEditorOpen`
-  with "Could not open Pine Editor." Affects every Pine-editor-routed
-  operation including the new `chart_manage_indicator` USER;<id> path
-  shipped 2026-05-17. Needs fresh probe of TV's internal editor handle
-  exposure — possibly via `chrome-remote-interface`'s `DOM.queryObjects`
-  on the editor class, possibly via a different fiber path.
 
 ### Replay API
 

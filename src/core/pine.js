@@ -27,43 +27,73 @@ function _resolve(deps) {
 //      path is unavailable (older TV builds, or window.monaco not exposed).
 const FIND_MONACO = `
   (function findMonacoEditor() {
-    // Fast path: direct Monaco API
-    try {
-      if (window.monaco && window.monaco.editor && typeof window.monaco.editor.getEditors === 'function') {
-        var allEditors = window.monaco.editor.getEditors();
-        for (var j = 0; j < allEditors.length; j++) {
-          var ed = allEditors[j];
+    // Pick the Pine editor (by .pine-editor-monaco ancestor) out of any
+    // editors returned by monaco.editor.getEditors(). Falls back to the
+    // first editor when no Pine-specific one is found — covers brief
+    // windows during tab switches where the editor container hasn't
+    // remounted yet.
+    function pickPineEditor(monaco) {
+      try {
+        var editors = monaco.editor.getEditors();
+        for (var i = 0; i < editors.length; i++) {
+          var ed = editors[i];
           var node = typeof ed.getContainerDomNode === 'function' ? ed.getContainerDomNode() : null;
           if (node && node.closest && node.closest('.pine-editor-monaco')) {
-            return { editor: ed, env: { editor: window.monaco.editor } };
+            return { editor: ed, env: { editor: monaco.editor } };
           }
         }
-      }
-    } catch (e) { /* fall through to fiber walk */ }
-
-    // Fallback: React fiber walk
-    var container = document.querySelector('.monaco-editor.pine-editor-monaco');
-    if (!container) return null;
-    var el = container;
-    var fiberKey;
-    for (var i = 0; i < 20; i++) {
-      if (!el) break;
-      fiberKey = Object.keys(el).find(function(k) { return k.startsWith('__reactFiber$'); });
-      if (fiberKey) break;
-      el = el.parentElement;
+        if (editors.length > 0) return { editor: editors[0], env: { editor: monaco.editor } };
+      } catch (e) {}
+      return null;
     }
-    if (!fiberKey) return null;
-    var current = el[fiberKey];
-    for (var d = 0; d < 15; d++) {
-      if (!current) break;
-      if (current.memoizedProps && current.memoizedProps.value && current.memoizedProps.value.monacoEnv) {
-        var env = current.memoizedProps.value.monacoEnv;
-        if (env.editor && typeof env.editor.getEditors === 'function') {
-          var editors = env.editor.getEditors();
-          if (editors.length > 0) return { editor: editors[0], env: env };
-        }
+
+    // Path 1: cached monaco namespace from a prior extraction (~free).
+    if (window.__tvMonaco && window.__tvMonaco.editor && typeof window.__tvMonaco.editor.getEditors === 'function') {
+      var hit = pickPineEditor(window.__tvMonaco);
+      if (hit) return hit;
+    }
+
+    // Path 2: legacy window.monaco — kept defensive in case TV re-exposes it.
+    // Confirmed undefined on TV Desktop 3.1.0.7818 (2026-05-17).
+    try {
+      if (window.monaco && window.monaco.editor && typeof window.monaco.editor.getEditors === 'function') {
+        var hit2 = pickPineEditor(window.monaco);
+        if (hit2) return hit2;
       }
-      current = current.return;
+    } catch (e) {}
+
+    // Path 3: extract monaco from webpack chunk registry. TV 3.1+ keeps
+    // the monaco namespace inside its webpack bundle but doesn't expose
+    // it on window. We push a fake chunk whose runtime callback scans
+    // all modules for one exporting editor.getEditors, then cache it on
+    // window.__tvMonaco for subsequent calls. One-time ~100 ms cost.
+    try {
+      var chunkArray = window.webpackChunktradingview;
+      if (chunkArray && typeof chunkArray.push === 'function') {
+        chunkArray.push([
+          ['__tv_monaco_extract__'],
+          {},
+          function(require) {
+            try {
+              var ids = Object.keys(require.m || {});
+              for (var i = 0; i < ids.length; i++) {
+                try {
+                  var mod = require(ids[i]);
+                  if (mod && mod.editor && typeof mod.editor.getEditors === 'function') {
+                    window.__tvMonaco = mod;
+                    return;
+                  }
+                } catch (e) { /* modules that throw at require-time are not monaco */ }
+              }
+            } catch (e) {}
+          },
+        ]);
+      }
+    } catch (e) {}
+
+    if (window.__tvMonaco && window.__tvMonaco.editor && typeof window.__tvMonaco.editor.getEditors === 'function') {
+      var hit3 = pickPineEditor(window.__tvMonaco);
+      if (hit3) return hit3;
     }
     return null;
   })()
@@ -122,6 +152,59 @@ const PINE_EDITOR_DIALOG_PRESENT = `
   })()
 `;
 
+// Existence-only check for "Pine Monaco editor is reachable". Triggers
+// webpack extraction if needed (same as FIND_MONACO's path 3) but returns
+// ONLY a boolean — never the editor reference. Critical because
+// Runtime.evaluate with returnByValue:true rejects the editor object with
+// "Object reference chain is too long"; we hit this when `FIND_MONACO !==
+// null` was used as a probe (V8 evaluates to a boolean, but the error
+// surface still bites the protocol). Used by ensurePineEditorOpen.
+const MONACO_PINE_EDITOR_AVAILABLE = `
+  (function() {
+    function extractIfNeeded() {
+      if (window.__tvMonaco) return;
+      try {
+        var chunkArray = window.webpackChunktradingview;
+        if (chunkArray && typeof chunkArray.push === 'function') {
+          chunkArray.push([
+            ['__tv_monaco_extract__'],
+            {},
+            function(require) {
+              try {
+                var ids = Object.keys(require.m || {});
+                for (var i = 0; i < ids.length; i++) {
+                  try {
+                    var mod = require(ids[i]);
+                    if (mod && mod.editor && typeof mod.editor.getEditors === 'function') {
+                      window.__tvMonaco = mod;
+                      return;
+                    }
+                  } catch (e) {}
+                }
+              } catch (e) {}
+            },
+          ]);
+        }
+      } catch (e) {}
+    }
+    extractIfNeeded();
+    if (!window.__tvMonaco || !window.__tvMonaco.editor) return false;
+    try {
+      var editors = window.__tvMonaco.editor.getEditors();
+      for (var i = 0; i < editors.length; i++) {
+        var ed = editors[i];
+        var node = typeof ed.getContainerDomNode === 'function' ? ed.getContainerDomNode() : null;
+        if (node && node.closest && node.closest('.pine-editor-monaco')) {
+          return true;
+        }
+      }
+      return editors.length > 0;
+    } catch (e) {
+      return false;
+    }
+  })()
+`;
+
 /**
  * Opens the Pine Editor panel and waits for Monaco to become available.
  * Returns true if editor is accessible, false on timeout.
@@ -139,7 +222,11 @@ export async function ensurePineEditorOpen({ _deps } = {}) {
   // FIND_MONACO walk in the common case.
   const dialogOpen = await evaluate(PINE_EDITOR_DIALOG_PRESENT);
   if (dialogOpen) {
-    const monacoReady = await evaluate(`(function() { return ${FIND_MONACO} !== null; })()`);
+    // MONACO_PINE_EDITOR_AVAILABLE returns boolean only — never the editor
+    // reference, which CDP refuses to serialize ("Object reference chain
+    // is too long"). FIND_MONACO is still used inside IIFEs that consume
+    // the editor without returning it across CDP.
+    const monacoReady = await evaluate(MONACO_PINE_EDITOR_AVAILABLE);
     if (monacoReady) return true;
   }
 
@@ -147,7 +234,7 @@ export async function ensurePineEditorOpen({ _deps } = {}) {
 
   for (let i = 0; i < 100; i++) {
     await new Promise(r => setTimeout(r, 200));
-    const ready = await evaluate(`(function() { return ${FIND_MONACO} !== null; })()`);
+    const ready = await evaluate(MONACO_PINE_EDITOR_AVAILABLE);
     if (ready) return true;
     // Re-invoke the panel-open trigger every 2s — idempotent, no-op if
     // panel is already open, recovers if the panel self-closed.

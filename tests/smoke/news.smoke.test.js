@@ -44,13 +44,13 @@ describe('core/news.js — smoke', () => {
       { title: 'Lawsuit risk grows', description: 'downgrade and selloff' },
       { title: 'Neutral news headline', description: 'regular update' },
     ]);
-    // Note: substring-match means "beats" matches BOTH 'beat' and 'beats' keywords.
-    // positive: beat+beats(from "beats"=2), bullish, rally, profit, surge = 6
-    // negative: lawsuit, risk, downgrade, selloff = 4
-    assert.equal(r.positive_hits, 6);
+    // Token-aware: each kw matches the token form once.
+    // positive tokens: beats, bullish, rally, profit, surge = 5
+    // negative tokens: lawsuit, risk, downgrade, selloff = 4
+    assert.equal(r.positive_hits, 5);
     assert.equal(r.negative_hits, 4);
-    assert.equal(r.score, 2);
-    assert.equal(r.bias, 'positive');
+    assert.equal(r.score, 1);
+    assert.equal(r.bias, 'mixed');
   });
 
   it('scoreHeadlines bias bands at |score| > 1', () => {

@@ -45,10 +45,12 @@ describe('core/strategy.js — smoke', () => {
     installCdpMocks({
       evaluate: async () => {
         n++;
-        if (n === 1) return { ok: true, text: '2023-01-01 — 2023-06-30' };
-        if (n === 2) return 2;  // inputs ready
-        if (n === 3) return { ok: true, set_from: '2024-01-01', set_to: '2024-12-31', button: 'Select' };
-        return { displayed: '2024-01-01 — 2024-12-31' };
+        if (n === 1) return { ok: true, text: '2023-01-01 — 2023-06-30' };  // picker open
+        if (n === 2) return 2;                                                // inputs-mounted probe
+        if (n === 3) return { ok: true, set_from: '2024-01-01', set_to: '2024-12-31', modal_found: true };  // fill
+        if (n === 4) return { ready: true, text: 'Select' };                  // submit-enable probe
+        if (n === 5) return { ok: true, set_from: '2024-01-01', button: 'Select' };  // click
+        return { displayed: '2024-01-01 — 2024-12-31' };                      // verify
       },
     });
     const r = await strategy.setDeepBacktestRange({ from: '2024-01-01', to: '2024-12-31' });
@@ -64,13 +66,14 @@ describe('core/strategy.js — smoke', () => {
     installCdpMocks({
       evaluate: async () => {
         n++;
-        if (n === 1) return { ok: true };
-        if (n === 2) return 2;
-        return { ok: false, error: 'submit button disabled (date range may be invalid)' };
+        if (n === 1) return { ok: true };                                                // picker open
+        if (n === 2) return 2;                                                           // inputs-mounted probe
+        if (n === 3) return { ok: true, set_from: '2024-01-01', set_to: '2024-12-31', modal_found: true };  // fill
+        return { ready: false, error: 'submit button never enabled (date range may be invalid)' };          // 20 polls all disabled
       },
     });
     const r = await strategy.setDeepBacktestRange({ from: '2024-01-01', to: '2024-12-31' });
     assert.equal(r.success, false);
-    assert.match(r.error, /disabled/);
+    assert.match(r.error, /never enabled|disabled/);
   });
 });

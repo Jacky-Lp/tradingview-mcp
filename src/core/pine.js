@@ -571,9 +571,23 @@ export async function save({ _deps } = {}) {
   const editorReady = await ensurePineEditorOpen({ _deps });
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
+  // Focus the Monaco textarea before dispatching Ctrl+S — without this,
+  // the keystroke is delivered to whatever input had focus last (chart
+  // canvas, watchlist row, etc.) and TV either fires the wrong shortcut
+  // or no-ops while we still return `Ctrl+S_dispatched`.
+  await evaluate(`
+    (function() {
+      var ta = document.querySelector('.pine-editor-monaco textarea')
+            || document.querySelector('[class*="pine-editor"] textarea')
+            || document.querySelector('.monaco-editor textarea.inputarea');
+      if (ta && typeof ta.focus === 'function') { try { ta.focus(); } catch(e) {} }
+      return !!ta;
+    })()
+  `);
+
   const c = await getClient();
   await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: 2, key: 's', code: 'KeyS', windowsVirtualKeyCode: 83 });
-  await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 's', code: 'KeyS' });
+  await c.Input.dispatchKeyEvent({ type: 'keyUp', modifiers: 2, key: 's', code: 'KeyS', windowsVirtualKeyCode: 83 });
   await new Promise(r => setTimeout(r, 800));
 
   // Handle "Save Script" name dialog that appears for new/unsaved scripts
@@ -779,9 +793,20 @@ export async function smartCompile({ _deps } = {}) {
     if (newStudies.length === 0) {
       studyAdded = false;
     } else if (pineTitleBefore) {
-      const titleLower = pineTitleBefore.toLowerCase();
-      titleMatch = newStudies.find(s => (s.name || '').toLowerCase().includes(titleLower)) || null;
-      studyAdded = !!titleMatch;
+      // Tight match: equality first, then strict prefix `title + " "` so
+      // "RSI Divergence" doesn't claim credit when the editor title is
+      // "RSI". For titles ≤3 chars the substring match was statistically
+      // worthless — bail to the "any new study" fallback there.
+      const titleLower = pineTitleBefore.toLowerCase().trim();
+      if (titleLower.length <= 3) {
+        studyAdded = true;
+      } else {
+        titleMatch = newStudies.find(s => {
+          const name = (s.name || '').toLowerCase();
+          return name === titleLower || name.startsWith(titleLower + ' ');
+        }) || null;
+        studyAdded = !!titleMatch;
+      }
     } else {
       // No editor title available — fall back to "any new study counts"
       // semantics rather than reporting a false negative.
@@ -868,10 +893,20 @@ export async function openScript({ name, id, _deps }) {
               if (sn === targetName || st === targetName) { match = scripts[i]; break; }
             }
             if (!match) {
+              // Substring fallback, but disambiguate: with multiple
+              // matches, refuse rather than picking arbitrarily — the
+              // previous "first hit wins" silently opened "Strategy v2"
+              // when the user asked for "Strategy" if it appeared first.
+              var candidates = [];
               for (var j = 0; j < scripts.length; j++) {
                 var sn2 = (scripts[j].scriptName || '').toLowerCase();
                 var st2 = (scripts[j].scriptTitle || '').toLowerCase();
-                if (sn2.indexOf(targetName) !== -1 || st2.indexOf(targetName) !== -1) { match = scripts[j]; break; }
+                if (sn2.indexOf(targetName) !== -1 || st2.indexOf(targetName) !== -1) candidates.push(scripts[j]);
+              }
+              if (candidates.length === 1) match = candidates[0];
+              else if (candidates.length > 1) {
+                var names = candidates.map(function(c){ return c.scriptName || c.scriptTitle; }).slice(0, 10).join(', ');
+                return {error: 'Ambiguous open: "' + targetName + '" matches ' + candidates.length + ' scripts (' + names + '). Pass the exact scriptName or use id=.'};
               }
             }
             if (!match) return {error: 'Script "' + targetName + '" not found. Use pine_list_scripts to see available scripts.'};
@@ -1244,13 +1279,19 @@ async function _pineMenuAction(label, subLabel, _deps) {
 
 // Resolve the currently open script's pine-facade {id, name, version}.
 // Reads the editor title button's text, then matches it against the saved
-// scripts list (with fuzzy fallback for truncated names).
-async function _currentScriptInfo(_deps) {
+// scripts list. When `strict: true` (the default for destructive flows
+// like renameScript / deleteScript) the substring fallback is disabled —
+// the title button text is authoritative for destructive operations and
+// the previous fuzzy fallback could resolve "My Test" to the wrong
+// script (e.g. "Test" or "My Test v2") when title-button text was
+// truncated or stale.
+async function _currentScriptInfo(_deps, { strict = true } = {}) {
   const { evaluateAsync } = _resolve(_deps);
   const result = await evaluateAsync(`
     (function() {
       var titleBtn = document.querySelector('[data-qa-id="pine-script-title-button"]');
       var currentName = titleBtn ? (titleBtn.querySelector('h2') || titleBtn).textContent.trim() : null;
+      var strict = ${strict ? 'true' : 'false'};
       return fetch('https://pine-facade.tradingview.com/pine-facade/list/?filter=saved', { credentials: 'include' })
         .then(function(r) { return r.json(); })
         .then(function(scripts) {
@@ -1262,13 +1303,13 @@ async function _currentScriptInfo(_deps) {
             var st = (scripts[i].scriptTitle || '').toLowerCase();
             if (sn === nameLower || st === nameLower) { match = scripts[i]; break; }
           }
-          if (!match) {
+          if (!match && !strict) {
             for (var j = 0; j < scripts.length; j++) {
               var sn2 = (scripts[j].scriptName || '').toLowerCase();
               if (sn2.indexOf(nameLower) !== -1 || nameLower.indexOf(sn2) !== -1) { match = scripts[j]; break; }
             }
           }
-          if (!match) return { error: 'Could not find current script in pine-facade. Name: ' + currentName };
+          if (!match) return { error: 'Could not find current script in pine-facade (exact match required). Editor title: ' + currentName };
           return { id: match.scriptIdPart, name: match.scriptName || match.scriptTitle, version: match.version };
         })
         .catch(function(e) { return { error: e.message }; });
@@ -1389,8 +1430,27 @@ export async function deleteScript({ name, _deps }) {
   if (!Array.isArray(list)) throw new Error('Unexpected pine-facade response');
 
   const target = name.toLowerCase();
+  // Delete is destructive and irreversible. Exact match required; if missing,
+  // fall back to substring ONLY when there is exactly one candidate. Multiple
+  // substring matches → refuse and ask the caller to disambiguate. The fuzzy
+  // single-hit fallback preserves convenience for "delete my one Strategy v2"
+  // without risking deletion of an unrelated 'Strategy' / 'Old Strategy'.
   let match = list.find(s => (s.scriptName || '').toLowerCase() === target || (s.scriptTitle || '').toLowerCase() === target);
-  if (!match) match = list.find(s => (s.scriptName || '').toLowerCase().includes(target) || (s.scriptTitle || '').toLowerCase().includes(target));
+  if (!match) {
+    const candidates = list.filter(s =>
+      (s.scriptName || '').toLowerCase().includes(target) ||
+      (s.scriptTitle || '').toLowerCase().includes(target)
+    );
+    if (candidates.length === 1) {
+      match = candidates[0];
+    } else if (candidates.length > 1) {
+      const names = candidates.map(s => s.scriptName || s.scriptTitle).slice(0, 10).join(', ');
+      throw new Error(
+        `Ambiguous delete: "${name}" matches ${candidates.length} scripts (${names}). ` +
+        `Pass the exact scriptName to disambiguate.`
+      );
+    }
+  }
   if (!match) throw new Error(`Script "${name}" not found. Use pine_list_scripts to see available scripts.`);
 
   const id = match.scriptIdPart;

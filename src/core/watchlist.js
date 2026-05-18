@@ -150,6 +150,24 @@ export async function add({ symbol, _deps }) {
   await c.Input.insertText({ text: symbol });
   await new Promise(r => setTimeout(r, 800));
 
+  // Confirm the symbol-search dropdown surfaced at least one match
+  // before committing with Enter. Typos / delisted tickers would
+  // otherwise be silently reported as success because we always sent
+  // Enter regardless of dropdown state.
+  const dropdownHasMatch = await evaluate(`
+    (function() {
+      var items = document.querySelectorAll('[data-name="symbol-search-items"] [role="option"], [data-name="symbol-search-items"] [class*="item-"]');
+      if (items && items.length > 0) return { count: items.length };
+      var fallback = document.querySelectorAll('[class*="symbol-search-listbox"] [class*="item"]');
+      return { count: fallback ? fallback.length : 0 };
+    })()
+  `);
+  if (!dropdownHasMatch || !dropdownHasMatch.count) {
+    await c.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Escape', code: 'Escape' });
+    return { success: false, symbol, action: 'not_added', reason: 'no_match' };
+  }
+
   // Press Enter to select first result
   await c.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
   await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Enter', code: 'Enter' });
@@ -199,15 +217,21 @@ export async function remove({ symbols, _deps }) {
 
   if (!listInfo) throw new Error('Cannot read active watchlist — is the watchlist panel open?');
 
-  // Normalise input symbols to EXCHANGE:SYMBOL format
+  // Normalise input symbols to EXCHANGE:SYMBOL format.
+  // TradingView stores entries upper-case ("NASDAQ:AAPL"). Comparing
+  // case-sensitively silently dropped lower-case prefixed input — match
+  // case-insensitively so "nasdaq:aapl" resolves to the stored entry.
   const toRemove = [];
   const skipped = [];
+  const stored = listInfo.symbols || [];
+  const storedLower = stored.map(s => String(s).toLowerCase());
   for (const sym of symbols) {
     if (sym.includes(':')) {
-      if (listInfo.symbols.includes(sym)) toRemove.push(sym);
+      const i = storedLower.indexOf(String(sym).toLowerCase());
+      if (i >= 0) toRemove.push(stored[i]);
       else skipped.push(sym);
     } else {
-      const match = listInfo.symbols.find(s => s.split(':')[1] === sym.toUpperCase());
+      const match = stored.find(s => s.split(':')[1] === String(sym).toUpperCase());
       if (match) toRemove.push(match);
       else skipped.push(sym);
     }
@@ -354,6 +378,28 @@ export async function addBulk({ symbols, _deps }) {
   if (!addClicked?.found) throw new Error('Add symbol button not found');
   await new Promise(r => setTimeout(r, 500));
 
+  // Snapshot the panel's current symbols so we can diff after each
+  // Enter and report honest per-symbol success. The previous version
+  // pushed { added: true } unconditionally — misspelled or delisted
+  // tickers silently dropped.
+  async function snapshot() {
+    const snap = await evaluate(`
+      (function() {
+        var panel = document.querySelector('[class*="layout__area--right"]');
+        if (!panel) return [];
+        var out = [];
+        var rows = panel.querySelectorAll('[data-symbol-full]');
+        for (var i = 0; i < rows.length; i++) {
+          var s = rows[i].getAttribute('data-symbol-full');
+          if (s) out.push(String(s).toUpperCase());
+        }
+        return out;
+      })()
+    `);
+    return new Set(Array.isArray(snap) ? snap : []);
+  }
+
+  let before = await snapshot();
   const results = [];
   // CDP modifier bits: 4 = meta (macOS Cmd), 2 = ctrl (Linux/Win Ctrl).
   const selectAllMod = process.platform === 'darwin' ? 4 : 2;
@@ -366,17 +412,48 @@ export async function addBulk({ symbols, _deps }) {
     await c.Input.insertText({ text: sym });
     await new Promise(r => setTimeout(r, 800));
 
+    // Bail if the dropdown has no match — pressing Enter without one
+    // closes the dialog but adds nothing.
+    const dropdownHasMatch = await evaluate(`
+      (function() {
+        var items = document.querySelectorAll('[data-name="symbol-search-items"] [role="option"], [data-name="symbol-search-items"] [class*="item-"]');
+        if (items && items.length > 0) return items.length;
+        var fallback = document.querySelectorAll('[class*="symbol-search-listbox"] [class*="item"]');
+        return fallback ? fallback.length : 0;
+      })()
+    `);
+    if (!dropdownHasMatch) {
+      results.push({ symbol: sym, added: false, reason: 'no_match' });
+      continue;
+    }
+
     // Enter to select first result
     await c.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
     await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Enter', code: 'Enter' });
     await new Promise(r => setTimeout(r, 500));
 
-    results.push({ symbol: sym, added: true });
+    const after = await snapshot();
+    let landed = null;
+    for (const entry of after) {
+      if (!before.has(entry)) { landed = entry; break; }
+    }
+    if (landed) {
+      results.push({ symbol: sym, resolved_as: landed, added: true });
+      before = after;
+    } else {
+      results.push({ symbol: sym, added: false, reason: 'not_in_panel_after_enter' });
+    }
   }
 
   // Close dialog
   await c.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Escape', code: 'Escape' });
 
-  return { success: true, count: results.length, symbols: results };
+  const addedCount = results.filter(r => r.added).length;
+  return {
+    success: addedCount === symbols.length,
+    count: addedCount,
+    failed: symbols.length - addedCount,
+    symbols: results,
+  };
 }

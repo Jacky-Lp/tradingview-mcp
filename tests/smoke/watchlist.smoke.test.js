@@ -31,13 +31,35 @@ describe('core/watchlist.js — smoke', () => {
     let call = 0;
     installCdpMocks({
       getClient: async () => fakeCdpClient(),
-      // First evaluate → panel state; second → addClicked
-      evaluate: async () => (++call === 1 ? { opened: true } : { found: true, selector: 'add-btn' }),
+      // 1: panel state, 2: addClicked, 3: dropdown-match probe
+      evaluate: async () => {
+        call++;
+        if (call === 1) return { opened: true };
+        if (call === 2) return { found: true, selector: 'add-btn' };
+        return { count: 1 };
+      },
     });
     const r = await watchlist.add({ symbol: 'NVDA' });
     assert.equal(r.success, true);
     assert.equal(r.symbol, 'NVDA');
     assert.equal(r.action, 'added');
+  });
+
+  it('test_add_smoke_no_dropdown_match', async () => {
+    let call = 0;
+    installCdpMocks({
+      getClient: async () => fakeCdpClient(),
+      evaluate: async () => {
+        call++;
+        if (call === 1) return { opened: true };
+        if (call === 2) return { found: true, selector: 'add-btn' };
+        return { count: 0 };  // dropdown empty
+      },
+    });
+    const r = await watchlist.add({ symbol: 'NOT_A_REAL_TICKER' });
+    assert.equal(r.success, false);
+    assert.equal(r.action, 'not_added');
+    assert.equal(r.reason, 'no_match');
   });
 
   // ── B.15 remove ─────────────────────────────────────────────────────

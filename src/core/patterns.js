@@ -12,6 +12,8 @@ const TREND_LOOKBACK = 5;
 const TREND_THRESHOLD = 0.005;
 
 function _shape(bar) {
+  if (!bar || !Number.isFinite(bar.open) || !Number.isFinite(bar.close)
+      || !Number.isFinite(bar.high) || !Number.isFinite(bar.low)) return null;
   const range = bar.high - bar.low;
   if (!(range > 0) || !Number.isFinite(range)) return null;
   const body = Math.abs(bar.close - bar.open);

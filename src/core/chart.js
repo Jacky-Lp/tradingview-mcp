@@ -543,9 +543,44 @@ async function _extendCacheBackward(evaluate, fromUnixSec) {
       if (started) break;
     }
     // Stop replay so the chart returns to live; bars remain in cache.
-    try { await evaluate(`window.TradingViewApi._replayApi.stopReplay()`); } catch { /* best-effort */ }
+    // Verify the stop actually landed — if we silently leave replay on,
+    // the caller's setVisibleRange returns success but the chart is
+    // frozen at the historical date with no realtime ticks. Surface
+    // replay_left_running so the caller can warn the user.
+    let stopError = null;
+    try { await evaluate(`window.TradingViewApi._replayApi.stopReplay()`); }
+    catch (e) { stopError = e.message; }
     await new Promise(r => setTimeout(r, 600));
-    return { extended: !!started };
+    let replayLeftRunning = false;
+    try {
+      replayLeftRunning = await evaluate(`
+        (function() {
+          var rp = window.TradingViewApi._replayApi;
+          var st = rp.isReplayStarted();
+          return (st && typeof st.value === 'function') ? st.value() : !!st;
+        })()
+      `);
+    } catch { /* probe failure leaves the flag false */ }
+    if (replayLeftRunning) {
+      // One retry — TV occasionally drops the first stopReplay during
+      // the immediate post-selectDate window.
+      try { await evaluate(`window.TradingViewApi._replayApi.stopReplay()`); } catch {}
+      await new Promise(r => setTimeout(r, 600));
+      try {
+        replayLeftRunning = await evaluate(`
+          (function() {
+            var rp = window.TradingViewApi._replayApi;
+            var st = rp.isReplayStarted();
+            return (st && typeof st.value === 'function') ? st.value() : !!st;
+          })()
+        `);
+      } catch {}
+    }
+    return {
+      extended: !!started,
+      ...(stopError ? { stop_error: stopError } : {}),
+      ...(replayLeftRunning ? { replay_left_running: true } : {}),
+    };
   } catch (e) {
     return { extended: false, error: e.message };
   }
@@ -569,29 +604,41 @@ export async function setVisibleRange({ from, to, auto_extend_cache = true, _dep
 
   await _zoomTimeRange(evaluate, f, t);
   await new Promise(r => setTimeout(r, 500));
-  const actual = await _readVisibleRange(evaluate) || { from: 0, to: 0 };
+  const actual = (await _readVisibleRange(evaluate)) || { from: 0, to: 0 };
 
+  // Treat a probe failure (from/to both 0, or explicit error field) as
+  // "couldn't tell" instead of "not clamped" — the previous code
+  // computed `0 > f+60`, which is always false for post-epoch
+  // timestamps, so auto_extend_cache silently skipped and the response
+  // claimed success with no diagnostic.
+  const probeFailed = !!actual.error || (!actual.from && !actual.to);
   // 60s tolerance: bar-snap quantization on intraday TFs lands the
   // cursor on the bar containing `from`, which can be up to one bar
   // earlier (we err on the side of "still inside the requested window").
-  const clamped = (actual.from || 0) > f + 60;
+  const clamped = !probeFailed && (actual.from || 0) > f + 60;
   let cacheExtended = false;
   let cacheNote = null;
+  let cacheReplayLeftRunning = false;
 
-  if (clamped && auto_extend_cache) {
+  if ((clamped || probeFailed) && auto_extend_cache) {
     const ext = await _extendCacheBackward(evaluate, f);
     cacheExtended = !!ext.extended;
     cacheNote = ext.error || null;
+    if (ext.replay_left_running) cacheReplayLeftRunning = true;
     if (cacheExtended) {
       await _zoomTimeRange(evaluate, f, t);
       await new Promise(r => setTimeout(r, 500));
-      const retry = await _readVisibleRange(evaluate) || { from: 0, to: 0 };
+      const retry = (await _readVisibleRange(evaluate)) || { from: 0, to: 0 };
+      const retryProbeFailed = !!retry.error || (!retry.from && !retry.to);
       return {
         success: true,
         requested: { from, to },
         actual: retry,
         cache_extended: true,
-        clamped: (retry.from || 0) > f + 60,
+        clamped: !retryProbeFailed && (retry.from || 0) > f + 60,
+        actual_read_failed: retryProbeFailed || undefined,
+        actual_read_error: retry.error || undefined,
+        replay_left_running: cacheReplayLeftRunning || undefined,
       };
     }
   }
@@ -603,6 +650,9 @@ export async function setVisibleRange({ from, to, auto_extend_cache = true, _dep
     cache_extended: cacheExtended,
     clamped,
     cache_note: cacheNote,
+    actual_read_failed: probeFailed || undefined,
+    actual_read_error: actual.error || undefined,
+    replay_left_running: cacheReplayLeftRunning || undefined,
   };
 }
 

@@ -1,8 +1,10 @@
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
+
+const THIS_HOST = hostname();
 
 // Pin a unique registry path BEFORE importing the module so the
 // module-level constant captures our temp path. Each test then clears
@@ -42,7 +44,7 @@ describe('core/pin_registry.js — smoke', () => {
     const otherPid = process.ppid;
     writeFileSync(process.env.TV_MCP_REGISTRY_PATH, JSON.stringify({
       version: 1,
-      pins: { target_xyz: { pid: otherPid, host: 'host', lane: 'a', claimedAt: Date.now() } },
+      pins: { target_xyz: { pid: otherPid, host: THIS_HOST, lane: 'a', claimedAt: Date.now() } },
     }));
     await assert.rejects(
       () => registry.claim('target_xyz'),
@@ -54,7 +56,7 @@ describe('core/pin_registry.js — smoke', () => {
     const otherPid = process.ppid;
     writeFileSync(process.env.TV_MCP_REGISTRY_PATH, JSON.stringify({
       version: 1,
-      pins: { target_xyz: { pid: otherPid, host: 'host', lane: null, claimedAt: 1 } },
+      pins: { target_xyz: { pid: otherPid, host: THIS_HOST, lane: null, claimedAt: 1 } },
     }));
     const r = await registry.claim('target_xyz', { force: true });
     assert.equal(r.entry.pid, process.pid);
@@ -65,7 +67,7 @@ describe('core/pin_registry.js — smoke', () => {
     const deadPid = 999999;  // very unlikely to be live
     writeFileSync(process.env.TV_MCP_REGISTRY_PATH, JSON.stringify({
       version: 1,
-      pins: { dead_target: { pid: deadPid, host: 'host', claimedAt: 1 } },
+      pins: { dead_target: { pid: deadPid, host: THIS_HOST, claimedAt: 1 } },
     }));
     const r = await registry.claim('new_target');
     assert.equal(r.entry.pid, process.pid);
@@ -88,7 +90,7 @@ describe('core/pin_registry.js — smoke', () => {
   it('release() of a tab we do not own returns released:false', async () => {
     writeFileSync(process.env.TV_MCP_REGISTRY_PATH, JSON.stringify({
       version: 1,
-      pins: { foreign: { pid: process.ppid, host: 'h', claimedAt: 1 } },
+      pins: { foreign: { pid: process.ppid, host: THIS_HOST, claimedAt: 1 } },
     }));
     const r = await registry.release('foreign');
     assert.equal(r.released, false);
@@ -102,7 +104,7 @@ describe('core/pin_registry.js — smoke', () => {
     await registry.claim('mine_2');
     // append a foreign pin
     const reg = JSON.parse(readFileSync(process.env.TV_MCP_REGISTRY_PATH, 'utf8'));
-    reg.pins.theirs = { pid: process.ppid, host: 'h', claimedAt: 1 };
+    reg.pins.theirs = { pid: process.ppid, host: THIS_HOST, claimedAt: 1 };
     writeFileSync(process.env.TV_MCP_REGISTRY_PATH, JSON.stringify(reg));
 
     await registry.releaseAll();
@@ -115,8 +117,8 @@ describe('core/pin_registry.js — smoke', () => {
   it('list() prunes dead PIDs and marks our entries with mine:true', async () => {
     await registry.claim('mine');
     const reg = JSON.parse(readFileSync(process.env.TV_MCP_REGISTRY_PATH, 'utf8'));
-    reg.pins.dead = { pid: 999999, host: 'h', claimedAt: 1 };
-    reg.pins.theirs = { pid: process.ppid, host: 'h', claimedAt: 1 };
+    reg.pins.dead = { pid: 999999, host: THIS_HOST, claimedAt: 1 };
+    reg.pins.theirs = { pid: process.ppid, host: THIS_HOST, claimedAt: 1 };
     writeFileSync(process.env.TV_MCP_REGISTRY_PATH, JSON.stringify(reg));
 
     const out = await registry.list();

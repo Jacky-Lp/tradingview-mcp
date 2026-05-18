@@ -60,16 +60,38 @@ describe('core/ui.js — smoke', () => {
     assert.equal(r.layouts[0].name, 'Day Trading');
   });
 
-  it('test_layoutSwitch_smoke', async () => {
+  it('test_layoutSwitch_smoke_no_dialog', async () => {
     installCdpMocks({
       evaluateAsync: async () => ({ success: true, method: 'loadChartFromServer', id: 'L1', name: 'Day Trading' }),
-      evaluate: async () => false,   // no unsaved-changes dialog
+      evaluate: async () => ({ present: false }),   // no unsaved-changes dialog
     });
     const r = await ui.layoutSwitch({ name: 'Day Trading' });
     assert.equal(r.success, true);
     assert.equal(r.layout, 'Day Trading');
     assert.equal(r.action, 'switched');
-    assert.equal(r.unsaved_dialog_dismissed, false);
+    assert.equal(r.discarded_unsaved_changes, false);
+  });
+
+  it('test_layoutSwitch_smoke_blocked_by_unsaved_dialog', async () => {
+    installCdpMocks({
+      evaluateAsync: async () => ({ success: true, method: 'loadChartFromServer', id: 'L1', name: 'Day Trading' }),
+      evaluate: async () => ({ present: true, button_text: 'Open anyway' }),
+    });
+    const r = await ui.layoutSwitch({ name: 'Day Trading' });
+    assert.equal(r.success, false);
+    assert.equal(r.unsaved_dialog_present, true);
+    assert.equal(r.blocking_button_text, 'Open anyway');
+    assert.match(r.error, /discard_unsaved/);
+  });
+
+  it('test_layoutSwitch_smoke_discard_opt_in', async () => {
+    installCdpMocks({
+      evaluateAsync: async () => ({ success: true, method: 'loadChartFromServer', id: 'L1', name: 'Day Trading' }),
+      evaluate: async () => ({ present: true, button_text: 'Discard' }),
+    });
+    const r = await ui.layoutSwitch({ name: 'Day Trading', discard_unsaved: true });
+    assert.equal(r.success, true);
+    assert.equal(r.discarded_unsaved_changes, true);
   });
 
   it('test_keyboard_smoke', async () => {

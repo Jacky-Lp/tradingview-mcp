@@ -564,15 +564,34 @@ export async function getQuote({ symbol, route, _deps } = {}) {
   }
 
   // chart_switch (explicit) or auto-fallback: setSymbol → read → restore.
+  // Re-probe the active symbol with a sturdier read right before we
+  // switch — the initial probe at line 544 may have failed (CDP
+  // transient, empty symbol()) and we'd otherwise strand the user on
+  // the requested symbol with no restore. If we still can't read it,
+  // surface `restored: false` instead of pretending nothing happened.
+  let restoreSymbol = activeSymbol;
+  if (!restoreSymbol) {
+    try {
+      const probe = await evaluate(`
+        (function() {
+          try { return { symbol: ${CHART_API}.symbol() }; }
+          catch (e) { return { error: e.message }; }
+        })()
+      `);
+      if (probe && probe.symbol) restoreSymbol = probe.symbol;
+    } catch { /* fall through with restoreSymbol still null */ }
+  }
   await setSymbol({ symbol, _deps });
+  let quoteResult;
+  let restored = false;
   try {
-    const r = await _getQuoteFromActiveChart({ _deps });
-    return { ...r, source: 'chart_switch' };
+    quoteResult = await _getQuoteFromActiveChart({ _deps });
   } finally {
-    if (activeSymbol) {
-      try { await setSymbol({ symbol: activeSymbol, _deps }); } catch { /* best-effort restore */ }
+    if (restoreSymbol) {
+      try { await setSymbol({ symbol: restoreSymbol, _deps }); restored = true; } catch { /* best-effort restore */ }
     }
   }
+  return { ...quoteResult, source: 'chart_switch', restored };
 }
 
 export async function getDepth({ _deps } = {}) {

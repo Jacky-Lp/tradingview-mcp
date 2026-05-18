@@ -52,6 +52,12 @@ function stripCdata(value = '') {
 }
 function decodeHtml(value = '') {
   return value
+    // Numeric references first (they may be nested inside named-entity
+    // text after an upstream double-encode).
+    .replace(/&#x([0-9a-f]+);/gi, (_m, hex) => { try { return String.fromCodePoint(parseInt(hex, 16)); } catch { return _m; } })
+    .replace(/&#(\d+);/g, (_m, dec) => { try { return String.fromCodePoint(parseInt(dec, 10)); } catch { return _m; } })
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -90,14 +96,22 @@ export function parseRss(xml, sourceName) {
   return { channel_title: channelTitle, items };
 }
 
-/** Keyword-based sentiment scoring — count POSITIVE/NEGATIVE keyword hits across title+description. */
+/**
+ * Keyword-based sentiment scoring — token-aware. Tokenizes each item's
+ * title + description on non-word boundaries and uses Set.has against
+ * the keyword list. The previous substring `haystack.includes(kw)`
+ * matched fragments inside unrelated words ("cut" inside "executive",
+ * "miss" inside "commission", "beat" inside "heartbeat"), producing
+ * inflated positive/negative counts on routine finance headlines.
+ */
 export function scoreHeadlines(items = []) {
   let positive = 0;
   let negative = 0;
   for (const item of items) {
     const haystack = `${item.title || ''} ${item.description || ''}`.toLowerCase();
-    for (const kw of POSITIVE_KEYWORDS) if (haystack.includes(kw)) positive += 1;
-    for (const kw of NEGATIVE_KEYWORDS) if (haystack.includes(kw)) negative += 1;
+    const tokens = new Set(haystack.split(/[^a-z0-9']+/).filter(Boolean));
+    for (const kw of POSITIVE_KEYWORDS) if (tokens.has(kw)) positive += 1;
+    for (const kw of NEGATIVE_KEYWORDS) if (tokens.has(kw)) negative += 1;
   }
   const score = positive - negative;
   const bias = score > 1 ? 'positive' : score < -1 ? 'negative' : 'mixed';
@@ -148,6 +162,14 @@ export async function getTickerNews({ symbol, limit, _deps } = {}) {
   const maxItems = Math.min(Math.max(Number(limit || 10), 1), 25);
   const resolved = await resolveSymbolAndTicker(symbol, evaluate);
   if (!resolved.ticker) throw new Error('Could not determine ticker for news lookup.');
+  // Constrain the ticker character set before it's interpolated into
+  // upstream RSS URLs. encodeURIComponent stops URL-syntax injection
+  // but the attacker still controls the query value; refuse anything
+  // that doesn't look like a real exchange symbol so we never embed
+  // operator-controlled data into a third-party request.
+  if (!/^[A-Z0-9.\-^=!]{1,15}$/i.test(resolved.ticker)) {
+    throw new Error(`Refusing news fetch for suspicious ticker "${resolved.ticker}" — expected exchange symbol matching /^[A-Z0-9.\\-^=!]{1,15}$/i.`);
+  }
 
   const errors = [];
   for (const source of NEWS_SOURCES) {

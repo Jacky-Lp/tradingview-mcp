@@ -25,13 +25,16 @@ function _resolve(deps) {
 //   cross       — fires on either direction
 //   cross_up    — fires only when price crosses up through the level
 //   cross_down  — fires only when price crosses down through the level
+// Returns null for unknown values so the caller can surface the error
+// instead of silently defaulting to bidirectional 'cross' (previous
+// behavior masked typos like "greather_than" by treating them as 'cross').
 function _normalizeCondition(condition) {
   if (!condition) return 'cross';
   const c = String(condition).toLowerCase().trim();
   if (c === 'cross' || c === 'crossing') return 'cross';
   if (c === 'greater_than' || c === 'above' || c === 'cross_above' || c === 'cross_up') return 'cross_up';
   if (c === 'less_than' || c === 'below' || c === 'cross_below' || c === 'cross_down') return 'cross_down';
-  return 'cross';
+  return null;
 }
 
 const PRICE_ALERT_DEFAULT_EXPIRATION_DAYS = 30;
@@ -69,6 +72,13 @@ export async function create({ condition, price, message, _deps } = {}) {
   });
 
   const condType = _normalizeCondition(condition);
+  if (condType === null) {
+    return {
+      success: false,
+      error: `Unknown condition "${condition}". Use one of: crossing, greater_than/above/cross_up, less_than/below/cross_down.`,
+      source: 'rest_api',
+    };
+  }
   const bareTicker = String(symbolInfo.symbol).split(':').pop();
   const defaultMessage = message || `${bareTicker} ${condition ? String(condition).toLowerCase() : 'crossing'} ${numericPrice}`;
   const expiration = new Date(Date.now() + PRICE_ALERT_DEFAULT_EXPIRATION_DAYS * 86400 * 1000).toISOString();
@@ -182,6 +192,7 @@ export async function list({ _deps } = {}) {
 export async function deleteAlerts({ alert_id, alert_ids, delete_all, _deps } = {}) {
   const { evaluateAsync } = _resolve(_deps);
   let ids = [];
+  let invalidInputs = [];
 
   if (delete_all) {
     const listed = await list({ _deps });
@@ -190,7 +201,21 @@ export async function deleteAlerts({ alert_id, alert_ids, delete_all, _deps } = 
       return { success: true, deleted_count: 0, note: 'No alerts to delete', source: 'rest_api' };
     }
   } else if (Array.isArray(alert_ids) && alert_ids.length > 0) {
-    ids = alert_ids.map(Number).filter(x => !isNaN(x));
+    // Partition: keep valid numerics, surface invalids so the caller sees
+    // typos instead of getting a silent partial-success.
+    for (const raw of alert_ids) {
+      const n = Number(raw);
+      if (Number.isFinite(n)) ids.push(n);
+      else invalidInputs.push(raw);
+    }
+    if (ids.length === 0) {
+      return {
+        success: false,
+        error: `No valid alert_ids in input (got ${alert_ids.length}, all non-numeric).`,
+        invalid_ids: invalidInputs,
+        source: 'rest_api',
+      };
+    }
   } else if (alert_id != null) {
     const n = Number(alert_id);
     if (isNaN(n)) throw new Error('alert_id must be a number');
@@ -221,6 +246,7 @@ export async function deleteAlerts({ alert_id, alert_ids, delete_all, _deps } = 
       success: true,
       deleted_count: ids.length,
       deleted_ids: ids,
+      invalid_ids: invalidInputs.length > 0 ? invalidInputs : undefined,
       source: 'rest_api',
     };
   }

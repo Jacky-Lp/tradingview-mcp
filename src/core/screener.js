@@ -49,7 +49,11 @@ function parseList(value) {
     const trimmed = value.trim();
     if (!trimmed) return [];
     if (trimmed.startsWith('[')) {
-      return JSON.parse(trimmed).map(v => String(v).trim()).filter(Boolean);
+      let arr;
+      try { arr = JSON.parse(trimmed); }
+      catch { throw new Error(`tickers: malformed JSON array (${trimmed.slice(0, 60)}). Use CSV "A,B,C" or valid JSON.`); }
+      if (!Array.isArray(arr)) throw new Error(`tickers: JSON value is not an array (${trimmed.slice(0, 60)}).`);
+      return arr.map(v => String(v).trim()).filter(Boolean);
     }
     return trimmed.split(',').map(v => v.trim()).filter(Boolean);
   }
@@ -64,7 +68,11 @@ function normalizeMarket(market, assetType) {
 
 function maybeAddRangeFilter(filters, left, operation, value) {
   if (value === undefined || value === null || value === '') return;
-  filters.push({ left, operation, right: Number(value) });
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    throw new Error(`${left} range filter: "${value}" is not a finite number`);
+  }
+  filters.push({ left, operation, right: n });
 }
 
 function matchesPreset(result, preset) {

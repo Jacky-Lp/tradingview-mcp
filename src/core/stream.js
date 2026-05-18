@@ -43,32 +43,35 @@ async function pollLoop(fetcher, { interval = 500, dedupe = true, label = 'strea
   writeStderr(`   Ensure your usage complies with TradingView's Terms of Use.\n`);
   writeStderr(`[stream:${label}] started, interval=${interval}ms, Ctrl+C to stop\n`);
 
-  while (running && iter < maxIterations) {
-    iter++;
-    try {
-      const data = await fetcher();
-      if (!data) { await sleepFn(interval); continue; }
+  try {
+    while (running && iter < maxIterations) {
+      iter++;
+      try {
+        const data = await fetcher();
+        if (!data) { await sleepFn(interval); continue; }
 
-      const hash = dedupe ? JSON.stringify(data) : null;
-      if (!dedupe || hash !== lastHash) {
-        lastHash = hash;
-        const line = JSON.stringify({ ...data, _ts: Date.now(), _stream: label });
-        writeStdout(line + '\n');
+        const hash = dedupe ? JSON.stringify(data) : null;
+        if (!dedupe || hash !== lastHash) {
+          lastHash = hash;
+          const line = JSON.stringify({ ...data, _ts: Date.now(), _stream: label });
+          writeStdout(line + '\n');
+        }
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        // Connection errors — retry silently
+        if (/CDP|ECONNREFUSED/i.test(msg)) {
+          await sleepFn(2000);
+          continue;
+        }
+        writeStderr(`[stream:${label}] error: ${msg}\n`);
       }
-    } catch (err) {
-      // Connection errors — retry silently
-      if (/CDP|ECONNREFUSED/i.test(err.message)) {
-        await sleepFn(2000);
-        continue;
-      }
-      writeStderr(`[stream:${label}] error: ${err.message}\n`);
+      await sleepFn(interval);
     }
-    await sleepFn(interval);
+  } finally {
+    writeStderr(`[stream:${label}] stopped after ${((Date.now() - start) / 1000).toFixed(1)}s\n`);
+    removeSignal('SIGINT', cleanup);
+    removeSignal('SIGTERM', cleanup);
   }
-
-  writeStderr(`[stream:${label}] stopped after ${((Date.now() - start) / 1000).toFixed(1)}s\n`);
-  removeSignal('SIGINT', cleanup);
-  removeSignal('SIGTERM', cleanup);
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

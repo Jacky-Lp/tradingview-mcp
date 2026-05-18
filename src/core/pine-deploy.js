@@ -23,17 +23,85 @@ import { readFile } from 'node:fs/promises';
 import * as _pine from './pine.js';
 import * as _chart from './chart.js';
 
-const TITLE_REGEX = /(?:indicator|strategy)\s*\(\s*[\s\S]*?['"]([^'"]+)['"]/;
+/**
+ * Parse a Pine string literal starting at index `i` of `source`. Returns
+ * { value, end } where `end` is the index after the closing quote, or
+ * null if no valid literal at that position. Honors `\\` and `\"`/`\'`
+ * escape sequences inside the matching quote style.
+ */
+function _readPineString(source, i) {
+  const quote = source[i];
+  if (quote !== '"' && quote !== "'") return null;
+  let out = '';
+  let j = i + 1;
+  while (j < source.length) {
+    const ch = source[j];
+    if (ch === '\\' && j + 1 < source.length) {
+      const next = source[j + 1];
+      if (next === quote || next === '\\') { out += next; j += 2; continue; }
+    }
+    if (ch === quote) return { value: out, end: j + 1 };
+    if (ch === '\n' && quote === '"') return null;  // unterminated
+    out += ch;
+    j++;
+  }
+  return null;
+}
 
 /**
  * Derive a pre-clean title match from the Pine source's indicator() /
- * strategy() declaration title. Falls back to the file basename when
- * the declaration can't be parsed. Caller can override via explicit
- * `cleanMatch` arg to deployScript().
+ * strategy() declaration title.
+ *
+ * Precedence: explicit `title=` named arg, then the first positional
+ * string, then the file basename. The previous regex
+ * `/['"]([^'"]+)['"]/` grabbed the FIRST quoted string after the paren,
+ * which silently mis-derived `indicator(shorttitle="NQR", title="...")`
+ * (returned "NQR") and broke entirely on titles containing escaped
+ * quotes. The new parser is quote-aware (honors `\"` / `\\` escapes
+ * inside the matching quote style) and named-arg aware so the resolved
+ * title flows correctly into the chart.removeStudiesByTitle pre-clean.
  */
 export function deriveCleanMatch(source, pinePath) {
-  const m = source.match(TITLE_REGEX);
-  if (m) return m[1];
+  const decl = source.match(/\b(indicator|strategy)\s*\(/);
+  if (decl) {
+    const argsStart = decl.index + decl[0].length;
+    let namedTitle = null;
+    let positionalTitle = null;
+    let i = argsStart;
+    let depth = 1;
+    while (i < source.length && depth > 0) {
+      const ch = source[i];
+      if (ch === '(') { depth++; i++; continue; }
+      if (ch === ')') { depth--; i++; continue; }
+      if (ch === '"' || ch === "'") {
+        const lit = _readPineString(source, i);
+        if (!lit) { i++; continue; }
+        if (positionalTitle === null) positionalTitle = lit.value;
+        i = lit.end;
+        continue;
+      }
+      if (/[A-Za-z_]/.test(ch)) {
+        const nameMatch = source.slice(i).match(/^([A-Za-z_][A-Za-z_0-9]*)\s*=\s*/);
+        if (nameMatch) {
+          const name = nameMatch[1];
+          const valStart = i + nameMatch[0].length;
+          if (source[valStart] === '"' || source[valStart] === "'") {
+            const lit = _readPineString(source, valStart);
+            if (lit) {
+              if (name === 'title' && namedTitle === null) namedTitle = lit.value;
+              i = lit.end;
+              continue;
+            }
+          }
+          i = valStart;
+          continue;
+        }
+      }
+      i++;
+    }
+    const picked = namedTitle || positionalTitle;
+    if (picked) return picked;
+  }
   const base = String(pinePath || '').split(/[/\\]/).pop() || '';
   return base.replace(/\.pine$/i, '');
 }

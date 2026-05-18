@@ -89,6 +89,7 @@ export async function healthCheck({ _deps } = {}) {
     chart_resolution: state?.resolution || 'unknown',
     chart_type: state?.chartType ?? null,
     api_available: state?.apiAvailable ?? false,
+    ...(state?.apiError ? { api_error: state.apiError } : {}),
   };
 }
 
@@ -224,11 +225,15 @@ export async function launch({ port, kill_existing } = {}) {
   try {
     const http = await import('http');
     const alreadyUp = await new Promise((resolve) => {
-      http.get(`http://localhost:${cdpPort}/json/version`, { timeout: 1500 }, (res) => {
+      const req = http.get(`http://localhost:${cdpPort}/json/version`, { timeout: 1500 }, (res) => {
         let data = '';
         res.on('data', (c) => data += c);
         res.on('end', () => resolve(data));
-      }).on('error', () => resolve(null));
+      });
+      req.on('error', () => resolve(null));
+      // Without this, the timeout option only emits the event; the socket
+      // sits there indefinitely on a half-open TCP. Destroy and resolve.
+      req.on('timeout', () => { req.destroy(); resolve(null); });
     });
     if (alreadyUp && !killFirst) {
       const info = JSON.parse(alreadyUp);
@@ -384,11 +389,13 @@ export async function launch({ port, kill_existing } = {}) {
     try {
       const http = await import('http');
       const ready = await new Promise((resolve) => {
-        http.get(`http://localhost:${cdpPort}/json/version`, (res) => {
+        const req = http.get(`http://localhost:${cdpPort}/json/version`, { timeout: 1500 }, (res) => {
           let data = '';
           res.on('data', (chunk) => data += chunk);
           res.on('end', () => resolve(data));
-        }).on('error', () => resolve(null));
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
       });
       if (ready) {
         const info = JSON.parse(ready);
@@ -428,13 +435,15 @@ export async function ensureCDP({ _deps } = {}) {
 
   // Step 1: Check if CDP is already responding
   const cdpAlive = await new Promise((resolve) => {
-    http.get(`http://localhost:${cdpPort}/json/version`, (res) => {
+    const req = http.get(`http://localhost:${cdpPort}/json/version`, { timeout: 1500 }, (res) => {
       let data = '';
       res.on('data', (chunk) => data += chunk);
       res.on('end', () => {
         try { resolve(JSON.parse(data)); } catch { resolve(null); }
       });
-    }).on('error', () => resolve(null));
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
   });
 
   if (cdpAlive) {

@@ -77,18 +77,30 @@ export async function setInputs({ entity_id, inputs: inputsRaw, _deps }) {
       var unmatched = [];
 
       // id-first lookup, then case-insensitive display-name fallback.
+      // Track display-name collisions: if two inputs share the same name
+      // (case-insensitively), the key is ambiguous — refuse to guess, push
+      // to unmatched_keys so the caller switches to ids.
       var idIdx = {};
       var nameIdx = {};
+      var nameCollision = {};
       for (var i = 0; i < currentInputs.length; i++) {
         idIdx[currentInputs[i].id] = i;
         var mi2 = metaFor(currentInputs[i].id);
-        if (mi2 && mi2.name) nameIdx[String(mi2.name).toLowerCase()] = i;
+        if (mi2 && mi2.name) {
+          var lname = String(mi2.name).toLowerCase();
+          if (Object.prototype.hasOwnProperty.call(nameIdx, lname)) nameCollision[lname] = true;
+          else nameIdx[lname] = i;
+        }
       }
 
       Object.keys(overrides).forEach(function(key) {
         var idx = -1;
         if (Object.prototype.hasOwnProperty.call(idIdx, key)) idx = idIdx[key];
-        else if (Object.prototype.hasOwnProperty.call(nameIdx, String(key).toLowerCase())) idx = nameIdx[String(key).toLowerCase()];
+        else {
+          var lkey = String(key).toLowerCase();
+          if (Object.prototype.hasOwnProperty.call(nameCollision, lkey)) { unmatched.push(key); return; }
+          if (Object.prototype.hasOwnProperty.call(nameIdx, lkey)) idx = nameIdx[lkey];
+        }
         if (idx === -1) { unmatched.push(key); return; }
         currentInputs[idx].value = overrides[key];
         updatedKeys[currentInputs[idx].id] = overrides[key];

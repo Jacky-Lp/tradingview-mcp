@@ -124,12 +124,16 @@ export async function setLayout({ layout, _deps }) {
 export async function focus({ index, _deps }) {
   const { evaluate } = _resolve(_deps);
   const idx = Number(index);
+  if (!Number.isInteger(idx) || idx < 0) {
+    throw new Error(`Pane index must be a non-negative integer; got ${JSON.stringify(index)}`);
+  }
   const result = await evaluate(`
     (function() {
       var cwc = ${CWC};
       var all = cwc.getAll();
-      if (${idx} >= all.length) return { error: 'Pane index ' + ${idx} + ' out of range (have ' + all.length + ' panes)' };
+      if (${idx} < 0 || ${idx} >= all.length) return { error: 'Pane index ' + ${idx} + ' out of range (have ' + all.length + ' panes)' };
       var chart = all[${idx}];
+      if (!chart) return { error: 'Pane index ' + ${idx} + ' resolved to undefined' };
       // Click the main div to activate it
       if (chart._mainDiv) chart._mainDiv.click();
       return { focused: ${idx}, total: all.length };
@@ -153,12 +157,16 @@ export async function focus({ index, _deps }) {
 export async function setTimeframe({ index, timeframe, _deps }) {
   const { evaluate } = _resolve(_deps);
   const idx = Number(index);
+  if (!Number.isInteger(idx) || idx < 0) {
+    throw new Error(`Pane index must be a non-negative integer; got ${JSON.stringify(index)}`);
+  }
   const result = await evaluate(`
     (function() {
       var cwc = ${CWC};
       var all = cwc.getAll();
-      if (${idx} >= all.length) return { error: 'Pane index ' + ${idx} + ' out of range (have ' + all.length + ' panes)' };
+      if (${idx} < 0 || ${idx} >= all.length) return { error: 'Pane index ' + ${idx} + ' out of range (have ' + all.length + ' panes)' };
       var chart = all[${idx}];
+      if (!chart) return { error: 'Pane index ' + ${idx} + ' resolved to undefined' };
       try {
         // TV 3.1.0 exposes setResolution on the chart widget itself, not on
         // its mainSeries. ttnsx888's original used mainSeries.setResolution
@@ -180,26 +188,42 @@ export async function setTimeframe({ index, timeframe, _deps }) {
 
 /**
  * Set the symbol on a specific pane by index.
- * Works by focusing the pane, then using the active chart's setSymbol.
+ *
+ * Resolves the target chart by index directly inside the eval — the
+ * previous implementation focused the pane, waited, then read
+ * `_activeChartWidgetWV.value()`, which raced under concurrent calls
+ * (two callers focusing different panes within the wait window both
+ * applied their symbol to whichever pane focus landed on last). The
+ * direct-by-index lookup matches the setTimeframe() pattern and removes
+ * the race entirely.
  */
 export async function setSymbol({ index, symbol, _deps }) {
   const { evaluateAsync } = _resolve(_deps);
   const idx = Number(index);
+  if (!Number.isInteger(idx) || idx < 0) {
+    throw new Error(`Pane index must be a non-negative integer; got ${JSON.stringify(index)}`);
+  }
 
-  // Focus the target pane first
-  await focus({ index: idx, _deps });
-  await new Promise(r => setTimeout(r, 300));
-
-  // Now set symbol on the now-active chart
-  await evaluateAsync(`
+  const result = await evaluateAsync(`
     (function() {
-      var chart = window.TradingViewApi._activeChartWidgetWV.value();
+      var cwc = ${CWC};
+      var all = cwc.getAll();
+      if (${idx} < 0 || ${idx} >= all.length) {
+        return Promise.resolve({ error: 'Pane index ' + ${idx} + ' out of range (have ' + all.length + ' panes)' });
+      }
+      var chart = all[${idx}];
+      if (!chart) return Promise.resolve({ error: 'Pane index ' + ${idx} + ' resolved to undefined' });
       return new Promise(function(resolve) {
-        chart.setSymbol(${safeString(symbol)}, {});
-        setTimeout(resolve, 500);
+        try {
+          chart.setSymbol(${safeString(symbol)}, {});
+          setTimeout(function() { resolve({ ok: true }); }, 500);
+        } catch (e) {
+          resolve({ error: 'setSymbol failed: ' + e.message });
+        }
       });
     })()
   `);
 
+  if (result?.error) throw new Error(result.error);
   return { success: true, index: idx, symbol };
 }

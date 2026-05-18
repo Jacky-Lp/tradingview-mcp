@@ -243,7 +243,24 @@ export async function layoutList({ _deps } = {}) {
   return { success: true, layout_count: layouts?.layouts?.length || 0, source: layouts?.source, layouts: layouts?.layouts || [], error: layouts?.error };
 }
 
-export async function layoutSwitch({ name, _deps }) {
+/**
+ * Switch to a saved layout.
+ *
+ * If the current chart has unsaved changes (Pine code, indicator settings,
+ * drawings, layout tweaks), TV shows a confirmation dialog before loading.
+ * `discard_unsaved` controls what we do with that dialog:
+ *
+ *   - false (default, SAFE): refuse to proceed and return
+ *     `{ success: false, unsaved_dialog_present: true }` so the caller can
+ *     surface the choice to the user or call again with discard_unsaved:true.
+ *   - true: click the destructive button (Open anyway / Don't save / Discard,
+ *     localized) — destroys unsaved work irrevocably. Response carries
+ *     `discarded_unsaved_changes: true` so the trace shows what happened.
+ *
+ * Previous behavior auto-discarded silently with no opt-in; that destroyed
+ * Pine code without consent (high-severity finding from 2026-05-18 review).
+ */
+export async function layoutSwitch({ name, discard_unsaved = false, _deps }) {
   const { evaluate, evaluateAsync } = _resolve(_deps);
   const escaped = JSON.stringify(name);
   const result = await evaluateAsync(`
@@ -267,31 +284,96 @@ export async function layoutSwitch({ name, _deps }) {
   `);
   if (!result?.success) throw new Error(result?.error || 'Unknown error switching layout');
 
-  // Handle "unsaved changes" confirmation dialog (multilingual)
+  // Wait briefly for TV to surface the unsaved-changes dialog (if any).
   await new Promise(r => setTimeout(r, 500));
-  const dismissed = await evaluate(`
+
+  // Detect the dialog without clicking — caller's discard_unsaved choice
+  // determines what we do with it.
+  const dialogState = await evaluate(`
     (function() {
-      // Match the "proceed / discard changes" button across locales.
-      // EN: "Open anyway", "Don't save", "Discard"
-      // PT: "Abrir mesmo assim", "Descartar", "Não salvar"
-      // ES: "Abrir de todos modos", "Descartar", "No guardar"
-      // FR: "Ouvrir quand même", "Ne pas enregistrer", "Abandonner"
-      // DE: "Trotzdem öffnen", "Nicht speichern", "Verwerfen"
       var rx = /open anyway|don'?t save|discard|abrir mesmo|descartar|não salvar|abrir de todos|no guardar|ouvrir quand|ne pas enregistrer|abandonner|trotzdem öffnen|nicht speichern|verwerfen/i;
       var btns = document.querySelectorAll('button');
       for (var i = 0; i < btns.length; i++) {
-        var text = btns[i].textContent.trim();
+        if (btns[i].offsetParent === null) continue;
+        var text = (btns[i].textContent || '').trim();
         if (rx.test(text)) {
-          btns[i].click();
-          return true;
+          return { present: true, button_text: text };
         }
       }
-      return false;
+      return { present: false };
     })()
   `);
 
-  if (dismissed) await new Promise(r => setTimeout(r, 1000));
-  return { success: true, layout: result.name || name, layout_id: result.id, source: result.source, action: 'switched', unsaved_dialog_dismissed: dismissed };
+  if (dialogState && dialogState.present && !discard_unsaved) {
+    return {
+      success: false,
+      unsaved_dialog_present: true,
+      blocking_button_text: dialogState.button_text,
+      error: 'Current layout has unsaved changes. Pass discard_unsaved: true to proceed and lose them, or save the current layout first.',
+    };
+  }
+
+  let discardedUnsavedChanges = false;
+  if (dialogState && dialogState.present && discard_unsaved) {
+    await evaluate(`
+      (function() {
+        var rx = /open anyway|don'?t save|discard|abrir mesmo|descartar|não salvar|abrir de todos|no guardar|ouvrir quand|ne pas enregistrer|abandonner|trotzdem öffnen|nicht speichern|verwerfen/i;
+        var btns = document.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+          if (btns[i].offsetParent === null) continue;
+          if (rx.test((btns[i].textContent || '').trim())) { btns[i].click(); return true; }
+        }
+        return false;
+      })()
+    `);
+    discardedUnsavedChanges = true;
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  return {
+    success: true,
+    layout: result.name || name,
+    layout_id: result.id,
+    source: result.source,
+    action: 'switched',
+    discarded_unsaved_changes: discardedUnsavedChanges,
+  };
+}
+
+// Single source of truth for { key → CDP { code, vk } }. Letters A–Z and
+// digits 0–9 are added programmatically below to avoid a 36-row table.
+// Previously, unmapped keys fell back to `code:'Key'+key.toUpperCase()`
+// and `vk:key.toUpperCase().charCodeAt(0)`, which only happens to be
+// correct for single ASCII letters — '/', '1', '.' and friends all
+// dispatched with invalid codes (e.g. '/' became 'Key/' vk 47 instead
+// of 'Slash' vk 191) and TV either ignored the event or routed it to
+// the wrong hotkey.
+const KEY_MAP = {
+  Enter: { code: 'Enter', vk: 13 }, Escape: { code: 'Escape', vk: 27 }, Tab: { code: 'Tab', vk: 9 },
+  Backspace: { code: 'Backspace', vk: 8 }, Delete: { code: 'Delete', vk: 46 }, Insert: { code: 'Insert', vk: 45 },
+  ArrowUp: { code: 'ArrowUp', vk: 38 }, ArrowDown: { code: 'ArrowDown', vk: 40 },
+  ArrowLeft: { code: 'ArrowLeft', vk: 37 }, ArrowRight: { code: 'ArrowRight', vk: 39 },
+  ' ': { code: 'Space', vk: 32 }, Space: { code: 'Space', vk: 32 },
+  Home: { code: 'Home', vk: 36 }, End: { code: 'End', vk: 35 },
+  PageUp: { code: 'PageUp', vk: 33 }, PageDown: { code: 'PageDown', vk: 34 },
+  F1: { code: 'F1', vk: 112 }, F2: { code: 'F2', vk: 113 }, F3: { code: 'F3', vk: 114 },
+  F4: { code: 'F4', vk: 115 }, F5: { code: 'F5', vk: 116 }, F6: { code: 'F6', vk: 117 },
+  F7: { code: 'F7', vk: 118 }, F8: { code: 'F8', vk: 119 }, F9: { code: 'F9', vk: 120 },
+  F10: { code: 'F10', vk: 121 }, F11: { code: 'F11', vk: 122 }, F12: { code: 'F12', vk: 123 },
+  '-': { code: 'Minus', vk: 189 }, '=': { code: 'Equal', vk: 187 },
+  '[': { code: 'BracketLeft', vk: 219 }, ']': { code: 'BracketRight', vk: 221 },
+  '\\': { code: 'Backslash', vk: 220 }, ';': { code: 'Semicolon', vk: 186 },
+  "'": { code: 'Quote', vk: 222 }, ',': { code: 'Comma', vk: 188 },
+  '.': { code: 'Period', vk: 190 }, '/': { code: 'Slash', vk: 191 },
+  '`': { code: 'Backquote', vk: 192 },
+};
+for (let i = 0; i < 10; i++) KEY_MAP[String(i)] = { code: `Digit${i}`, vk: 48 + i };
+for (let i = 0; i < 26; i++) {
+  const lo = String.fromCharCode(97 + i);
+  const up = String.fromCharCode(65 + i);
+  const entry = { code: `Key${up}`, vk: 65 + i };
+  KEY_MAP[lo] = entry;
+  KEY_MAP[up] = entry;
 }
 
 export async function keyboard({ key, modifiers, _deps }) {
@@ -304,18 +386,15 @@ export async function keyboard({ key, modifiers, _deps }) {
     if (modifiers.includes('meta')) mod |= 4;
     if (modifiers.includes('shift')) mod |= 8;
   }
-  const keyMap = {
-    'Enter': { code: 'Enter', vk: 13 }, 'Escape': { code: 'Escape', vk: 27 }, 'Tab': { code: 'Tab', vk: 9 },
-    'Backspace': { code: 'Backspace', vk: 8 }, 'Delete': { code: 'Delete', vk: 46 },
-    'ArrowUp': { code: 'ArrowUp', vk: 38 }, 'ArrowDown': { code: 'ArrowDown', vk: 40 },
-    'ArrowLeft': { code: 'ArrowLeft', vk: 37 }, 'ArrowRight': { code: 'ArrowRight', vk: 39 },
-    'Space': { code: 'Space', vk: 32 }, 'Home': { code: 'Home', vk: 36 }, 'End': { code: 'End', vk: 35 },
-    'PageUp': { code: 'PageUp', vk: 33 }, 'PageDown': { code: 'PageDown', vk: 34 },
-    'F1': { code: 'F1', vk: 112 }, 'F2': { code: 'F2', vk: 113 }, 'F5': { code: 'F5', vk: 116 },
-  };
-  const mapped = keyMap[key] || { code: 'Key' + key.toUpperCase(), vk: key.toUpperCase().charCodeAt(0) };
+  const mapped = KEY_MAP[key];
+  if (!mapped) {
+    throw new Error(`ui_keyboard: unknown key "${key}". Pass a single letter/digit, a punctuation char from KEY_MAP, or a named key (Enter, Escape, Tab, Arrow*, F1–F12, etc.).`);
+  }
+  // Keep modifiers on the keyUp too — without them, a Ctrl+S keyUp
+  // delivers a plain S to whatever input has focus on platforms that
+  // re-fire on modifier release.
   await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: mod, key, code: mapped.code, windowsVirtualKeyCode: mapped.vk });
-  await c.Input.dispatchKeyEvent({ type: 'keyUp', key, code: mapped.code });
+  await c.Input.dispatchKeyEvent({ type: 'keyUp', modifiers: mod, key, code: mapped.code, windowsVirtualKeyCode: mapped.vk });
   return { success: true, key, modifiers: modifiers || [] };
 }
 

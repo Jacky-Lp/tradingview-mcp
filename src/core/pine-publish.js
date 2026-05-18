@@ -41,20 +41,32 @@ export async function publishDialogInspect({ _deps } = {}) {
   const editorReady = await ensurePineEditorOpen({ _deps });
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
-  // Step 1 — click the publish button (heuristic: data-name, aria-label,
-  // class substring "publishButton", or any visible button whose text or
-  // aria-label matches /publish.*script/ or /publier.*script/).
+  // Step 1 — click the publish button, scoped to the Pine Editor root.
+  // Document-wide queries previously matched 'publish' surfaces on
+  // unrelated panels (alert-conditions, strategy-tester, layout
+  // publishing), so a collapsed Pine editor could trigger publish on
+  // another flow — the subsequent dialog dump would return data from
+  // the wrong dialog. The Pine editor root is anchored by the
+  // .pine-editor-monaco container (or .pine-editor-* fallback).
   const buttonClicked = await evaluate(`
     (function() {
       function visible(el) { return el && el.offsetParent !== null; }
+      // Resolve the Pine editor root; refuse to broaden to document.
+      var root = document.querySelector('.pine-editor-monaco')
+              || document.querySelector('[class*="pine-editor"]')
+              || document.querySelector('[data-name*="pine-editor" i]');
+      if (!root) return { clicked: false, error: 'Pine editor root not found — cannot scope publish-button search' };
+      // Walk up to the editor's surrounding panel so the toolbar buttons
+      // (which live in a sibling of the editor container) are reachable.
+      var scope = root.closest('[class*="widgetbar" i], [class*="editor-container" i], [data-name*="pine" i]') || root.parentElement || root;
       var candidates = [];
-      var byData = document.querySelectorAll('[data-name*="publish" i], [data-name*="Publish" i]');
+      var byData = scope.querySelectorAll('[data-name*="publish" i]');
       for (var i = 0; i < byData.length; i++) candidates.push(byData[i]);
-      var byAria = document.querySelectorAll('[aria-label*="ublish" i]');
+      var byAria = scope.querySelectorAll('[aria-label*="ublish" i]');
       for (var j = 0; j < byAria.length; j++) candidates.push(byAria[j]);
-      var byClass = document.querySelectorAll('[class*="publishButton" i]');
+      var byClass = scope.querySelectorAll('[class*="publishButton" i]');
       for (var n = 0; n < byClass.length; n++) candidates.push(byClass[n]);
-      var btns = document.querySelectorAll('button, [role="button"]');
+      var btns = scope.querySelectorAll('button, [role="button"]');
       for (var k = 0; k < btns.length; k++) {
         var t = (btns[k].textContent || '').trim();
         var al = btns[k].getAttribute('aria-label') || '';
@@ -79,105 +91,140 @@ export async function publishDialogInspect({ _deps } = {}) {
   `);
 
   if (!buttonClicked || !buttonClicked.clicked) {
-    return { success: false, error: 'Publish Script button not found in Pine Editor toolbar.' };
+    return { success: false, error: buttonClicked?.error || 'Publish Script button not found in Pine Editor toolbar.' };
   }
 
   await new Promise(r => setTimeout(r, 1500));
 
+  // The publish dialog has a real Publish button that pushes scripts to
+  // TV's public community library; leaving it open after an inspection
+  // failure invites accidental clicks by the user or downstream
+  // automation. Always close on any non-happy exit path.
+  const closeDialog = async () => {
+    try {
+      await evaluate(`
+        (function() {
+          var rx = /^(close|cancel|×|annuler|cancelar|abbrechen|chiudi)$/i;
+          var dialogs = document.querySelectorAll('[role="dialog"], [class*="dialog" i], [class*="modal" i]');
+          for (var d = 0; d < dialogs.length; d++) {
+            if (dialogs[d].offsetParent === null) continue;
+            var btns = dialogs[d].querySelectorAll('button, [role="button"]');
+            for (var i = 0; i < btns.length; i++) {
+              var t = (btns[i].textContent || '').trim();
+              var al = btns[i].getAttribute('aria-label') || '';
+              if (rx.test(t) || /^(close|cancel)$/i.test(al)) {
+                if (btns[i].offsetParent !== null) { btns[i].click(); return true; }
+              }
+            }
+          }
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+          return false;
+        })()
+      `);
+    } catch { /* best-effort cleanup */ }
+  };
+
   // Step 2 — dump everything in the visible dialog so callers can
   // discover their TV build's actual selectors + labels.
-  const inspection = await evaluate(`
-    (function() {
-      function visible(el) { return el && el.offsetParent !== null; }
-      function preview(s) { s = String(s == null ? '' : s); return s.length > 100 ? s.slice(0, 100) : s; }
-      function findLabel(el) {
-        if (!el) return '';
-        if (el.id) {
-          var lab = document.querySelector('label[for="' + el.id + '"]');
-          if (lab) return (lab.textContent || '').trim();
+  let inspection;
+  try {
+    inspection = await evaluate(`
+      (function() {
+        function visible(el) { return el && el.offsetParent !== null; }
+        function preview(s) { s = String(s == null ? '' : s); return s.length > 100 ? s.slice(0, 100) : s; }
+        function findLabel(el) {
+          if (!el) return '';
+          if (el.id) {
+            var lab = document.querySelector('label[for="' + el.id + '"]');
+            if (lab) return (lab.textContent || '').trim();
+          }
+          var p = el.parentElement;
+          for (var i = 0; i < 4 && p; i++) {
+            if (p.tagName === 'LABEL') return (p.textContent || '').trim();
+            p = p.parentElement;
+          }
+          return (el.getAttribute('aria-label') || '').trim();
         }
-        var p = el.parentElement;
-        for (var i = 0; i < 4 && p; i++) {
-          if (p.tagName === 'LABEL') return (p.textContent || '').trim();
-          p = p.parentElement;
+
+        var dialogs = document.querySelectorAll('[role="dialog"], [class*="dialog" i], [class*="modal" i], [data-name*="dialog" i]');
+        var dialog = null;
+        for (var i = 0; i < dialogs.length; i++) {
+          if (visible(dialogs[i])) { dialog = dialogs[i]; break; }
         }
-        return (el.getAttribute('aria-label') || '').trim();
-      }
+        if (!dialog) return { dialog_found: false };
 
-      var dialogs = document.querySelectorAll('[role="dialog"], [class*="dialog" i], [class*="modal" i], [data-name*="dialog" i]');
-      var dialog = null;
-      for (var i = 0; i < dialogs.length; i++) {
-        if (visible(dialogs[i])) { dialog = dialogs[i]; break; }
-      }
-      if (!dialog) return { dialog_found: false };
+        var inputs = [];
+        var raw = dialog.querySelectorAll('input, textarea, select');
+        for (var a = 0; a < raw.length; a++) {
+          var el = raw[a];
+          var type = (el.type || el.tagName).toLowerCase();
+          if (type === 'radio' || type === 'checkbox') continue;
+          inputs.push({
+            tag: el.tagName.toLowerCase(), type: type,
+            name: el.name || null, id: el.id || null,
+            placeholder: el.placeholder || null,
+            aria_label: el.getAttribute('aria-label') || null,
+            class: el.className || null,
+            value_preview: preview(el.value),
+          });
+        }
 
-      var inputs = [];
-      var raw = dialog.querySelectorAll('input, textarea, select');
-      for (var a = 0; a < raw.length; a++) {
-        var el = raw[a];
-        var type = (el.type || el.tagName).toLowerCase();
-        if (type === 'radio' || type === 'checkbox') continue;
-        inputs.push({
-          tag: el.tagName.toLowerCase(), type: type,
-          name: el.name || null, id: el.id || null,
-          placeholder: el.placeholder || null,
-          aria_label: el.getAttribute('aria-label') || null,
-          class: el.className || null,
-          value_preview: preview(el.value),
-        });
-      }
+        var buttons = [];
+        var btns = dialog.querySelectorAll('button, [role="button"]');
+        for (var b = 0; b < btns.length; b++) {
+          if (!visible(btns[b])) continue;
+          buttons.push({
+            text: (btns[b].textContent || '').trim().slice(0, 120),
+            aria_label: btns[b].getAttribute('aria-label') || null,
+            class: btns[b].className || null,
+            disabled: btns[b].disabled === true || btns[b].getAttribute('aria-disabled') === 'true',
+          });
+        }
 
-      var buttons = [];
-      var btns = dialog.querySelectorAll('button, [role="button"]');
-      for (var b = 0; b < btns.length; b++) {
-        if (!visible(btns[b])) continue;
-        buttons.push({
-          text: (btns[b].textContent || '').trim().slice(0, 120),
-          aria_label: btns[b].getAttribute('aria-label') || null,
-          class: btns[b].className || null,
-          disabled: btns[b].disabled === true || btns[b].getAttribute('aria-disabled') === 'true',
-        });
-      }
+        var radios = [];
+        var rcs = dialog.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+        for (var r = 0; r < rcs.length; r++) {
+          radios.push({
+            type: rcs[r].type, name: rcs[r].name || null, value: rcs[r].value || null,
+            label_text: findLabel(rcs[r]),
+            checked: rcs[r].checked === true,
+          });
+        }
 
-      var radios = [];
-      var rcs = dialog.querySelectorAll('input[type="radio"], input[type="checkbox"]');
-      for (var r = 0; r < rcs.length; r++) {
-        radios.push({
-          type: rcs[r].type, name: rcs[r].name || null, value: rcs[r].value || null,
-          label_text: findLabel(rcs[r]),
-          checked: rcs[r].checked === true,
-        });
-      }
+        var headings = [];
+        var hs = dialog.querySelectorAll('h1, h2, h3, h4, [role="heading"]');
+        for (var h = 0; h < hs.length; h++) {
+          var ht = (hs[h].textContent || '').trim();
+          if (ht) headings.push(ht);
+        }
 
-      var headings = [];
-      var hs = dialog.querySelectorAll('h1, h2, h3, h4, [role="heading"]');
-      for (var h = 0; h < hs.length; h++) {
-        var ht = (hs[h].textContent || '').trim();
-        if (ht) headings.push(ht);
-      }
+        var editors = [];
+        var eds = dialog.querySelectorAll('[class*="editor" i], [class*="monaco" i]');
+        for (var e = 0; e < eds.length; e++) {
+          editors.push({
+            class: eds[e].className || null,
+            tag: eds[e].tagName.toLowerCase(),
+            has_monaco: /monaco/i.test(eds[e].className || ''),
+          });
+        }
 
-      var editors = [];
-      var eds = dialog.querySelectorAll('[class*="editor" i], [class*="monaco" i]');
-      for (var e = 0; e < eds.length; e++) {
-        editors.push({
-          class: eds[e].className || null,
-          tag: eds[e].tagName.toLowerCase(),
-          has_monaco: /monaco/i.test(eds[e].className || ''),
-        });
-      }
-
-      return {
-        dialog_found: true,
-        dialog_class: dialog.className || null,
-        dialog_role: dialog.getAttribute('role') || null,
-        inputs: inputs, buttons: buttons,
-        radios_or_checkboxes: radios,
-        headings: headings, editor_containers: editors,
-      };
-    })()
-  `);
+        return {
+          dialog_found: true,
+          dialog_class: dialog.className || null,
+          dialog_role: dialog.getAttribute('role') || null,
+          inputs: inputs, buttons: buttons,
+          radios_or_checkboxes: radios,
+          headings: headings, editor_containers: editors,
+        };
+      })()
+    `);
+  } catch (err) {
+    await closeDialog();
+    throw err;
+  }
 
   if (!inspection || !inspection.dialog_found) {
+    await closeDialog();
     return { success: false, error: 'Publish button clicked but no dialog appeared after 1500ms.', button_clicked: buttonClicked };
   }
 

@@ -442,16 +442,17 @@ describe('core/chart.js — smoke', () => {
   });
 
   it('test_setVisibleRange_smoke_auto_extend_retries_after_preload', async () => {
-    // 1. _zoomTimeRange                       → undef
-    // 2. _readVisibleRange                    → clamped (from=1700000000)
-    // 3. _extendCacheBackward: replayAvailable → true
-    // 4. _extendCacheBackward: wasStarted      → false
-    // 5. showReplayToolbar                     → undef
-    // 6. selectDate                            → undef
-    // 7. poll isReplayStarted                  → true (first iteration)
-    // 8. stopReplay                            → undef
-    // 9. _zoomTimeRange retry                  → undef
-    // 10. _readVisibleRange retry              → unclamped (from=1690000000)
+    // 1. _zoomTimeRange                                → undef
+    // 2. _readVisibleRange                             → clamped (from=1700000000)
+    // 3. _extendCacheBackward: replayAvailable          → true
+    // 4. _extendCacheBackward: wasStarted               → false
+    // 5. showReplayToolbar                              → undef
+    // 6. selectDate                                     → undef
+    // 7. poll isReplayStarted                           → true (first iteration)
+    // 8. stopReplay                                     → undef
+    // 9. post-stop isReplayStarted probe                → false (stop landed)
+    // 10. _zoomTimeRange retry                          → undef
+    // 11. _readVisibleRange retry                       → unclamped (from=1690000000)
     const responses = [
       undefined,
       { from: 1700000000, to: 1700001000 },
@@ -461,6 +462,7 @@ describe('core/chart.js — smoke', () => {
       undefined,
       true,
       undefined,
+      false,
       undefined,
       { from: 1690000000, to: 1700001000 },
     ];

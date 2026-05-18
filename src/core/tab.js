@@ -28,38 +28,50 @@ const PINE_READ_TIMEOUT_MS = 2000;
  * CDP() function.
  */
 async function _readActivePineScript(targetId, cdpFactory = CDP) {
-  let c;
-  let timer;
   const sentinel = Symbol('timeout');
-  try {
-    const work = (async () => {
-      c = await cdpFactory({ host: CDP_HOST, port: CDP_PORT, target: targetId });
-      await c.Runtime.enable();
-      const { result } = await c.Runtime.evaluate({
-        expression: `
-          (function() {
-            var btn = document.querySelector('[data-qa-id="pine-script-title-button"]');
-            if (!btn) return null;
-            var h2 = btn.querySelector('h2') || btn;
-            var name = (h2.textContent || '').trim();
-            return name || null;
-          })()
-        `,
-        returnByValue: true,
-      });
-      return result?.value || null;
-    })();
-    const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => resolve(sentinel), PINE_READ_TIMEOUT_MS);
+  let client = null;
+  let timer = null;
+
+  // Capture the client into the outer scope the instant cdpFactory
+  // resolves — not after `await` completes — so the timeout path can
+  // close it once the slow connect finally lands. Without this, every
+  // hung-target read (the scenario this function exists for) leaked
+  // a CDP socket.
+  const connectAndRead = (async () => {
+    client = await cdpFactory({ host: CDP_HOST, port: CDP_PORT, target: targetId });
+    await client.Runtime.enable();
+    const { result } = await client.Runtime.evaluate({
+      expression: `
+        (function() {
+          var btn = document.querySelector('[data-qa-id="pine-script-title-button"]');
+          if (!btn) return null;
+          var h2 = btn.querySelector('h2') || btn;
+          var name = (h2.textContent || '').trim();
+          return name || null;
+        })()
+      `,
+      returnByValue: true,
     });
-    const winner = await Promise.race([work, timeout]);
-    if (winner === sentinel) return null;
+    return result?.value || null;
+  })();
+  const safeWork = connectAndRead.catch(() => null);
+
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(sentinel), PINE_READ_TIMEOUT_MS);
+  });
+
+  try {
+    const winner = await Promise.race([safeWork, timeout]);
+    if (winner === sentinel) {
+      // Schedule cleanup for the late-arriving client. safeWork never
+      // rejects, so this can't add an unhandled rejection.
+      safeWork.then(() => { if (client) { try { client.close(); } catch {} } });
+      return null;
+    }
     return winner;
-  } catch {
-    return null;
   } finally {
     if (timer) clearTimeout(timer);
-    if (c) try { await c.close(); } catch {}
+    if (client) { try { await client.close(); } catch {} }
   }
 }
 
@@ -264,17 +276,28 @@ export async function closeTab({ id, _deps } = {}) {
 }
 
 /**
- * Switch to a tab by index. Reconnects CDP to the new target.
+ * Switch to a tab by index OR id. Reconnects CDP to the new target.
+ *
+ * Prefer `id` when calling from another function that already resolved
+ * a tab — passing index forces a second list() round-trip and races
+ * against tab opens/closes that happen between the two calls.
  */
-export async function switchTab({ index }) {
-  const tabs = await list({ include_pine_script: false });
-  const idx = Number(index);
-
-  if (idx >= tabs.tab_count) {
-    throw new Error(`Tab index ${idx} out of range (have ${tabs.tab_count} tabs)`);
+export async function switchTab({ index, id }) {
+  let target;
+  if (id) {
+    const tabs = await list({ include_pine_script: false });
+    target = tabs.tabs.find(t => t.id === id);
+    if (!target) {
+      throw new Error(`Tab id ${id} not found (have ${tabs.tab_count} tabs)`);
+    }
+  } else {
+    const tabs = await list({ include_pine_script: false });
+    const idx = Number(index);
+    if (idx >= tabs.tab_count) {
+      throw new Error(`Tab index ${idx} out of range (have ${tabs.tab_count} tabs)`);
+    }
+    target = tabs.tabs[idx];
   }
-
-  const target = tabs.tabs[idx];
 
   // Activate the tab visually and reconnect CDP client to the new target.
   // Use CDP Target.activateTarget rather than the /json/activate REST hook —
@@ -286,9 +309,9 @@ export async function switchTab({ index }) {
     await currentClient.Target.activateTarget({ targetId: target.id });
     await new Promise(r => setTimeout(r, 500));
     await connectToTarget(target.id);
-    return { success: true, action: 'switched', index: idx, tab_id: target.id, chart_id: target.chart_id };
+    return { success: true, action: 'switched', index: target.index, tab_id: target.id, chart_id: target.chart_id };
   } catch (e) {
-    throw new Error(`Failed to activate tab ${idx}: ${e.message}`);
+    throw new Error(`Failed to activate tab ${target.id}: ${e.message}`);
   }
 }
 
@@ -327,7 +350,7 @@ export async function switchTabByName({ name, _deps } = {}) {
     );
   }
 
-  return switchTab({ index: match.index });
+  return switchTab({ id: match.id });
 }
 
 // ── Pin / unpin / registry ───────────────────────────────────────────────

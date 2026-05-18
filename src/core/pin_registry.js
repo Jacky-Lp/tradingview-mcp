@@ -26,8 +26,15 @@ const LOCK_RETRY_MS = 25;
 const LOCK_MAX_WAIT_MS = 2000;
 const REGISTRY_VERSION = 1;
 
-function isAlive(pid) {
+function isAlive(entryOrPid) {
+  // Accepts the registry entry (preferred) or a raw pid. When passed an
+  // entry, treats foreign-host entries as dead — PID recycling on a
+  // different host (or registry sync via dotfiles) can otherwise make a
+  // dead pin look live forever and block legitimate claims.
+  const entry = typeof entryOrPid === 'object' && entryOrPid !== null ? entryOrPid : null;
+  const pid = entry ? entry.pid : entryOrPid;
   if (!pid || typeof pid !== 'number') return false;
+  if (entry && entry.host && entry.host !== hostname()) return false;
   try { process.kill(pid, 0); return true; }
   catch (err) { return err.code === 'EPERM'; }
 }
@@ -36,11 +43,25 @@ function emptyRegistry() { return { version: REGISTRY_VERSION, pins: {} }; }
 
 function readRaw() {
   if (!existsSync(REGISTRY_PATH)) return emptyRegistry();
+  let raw;
+  try { raw = readFileSync(REGISTRY_PATH, 'utf8'); }
+  catch { return emptyRegistry(); }
   try {
-    const parsed = JSON.parse(readFileSync(REGISTRY_PATH, 'utf8'));
+    const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || !parsed.pins) return emptyRegistry();
     return parsed;
-  } catch { return emptyRegistry(); }
+  } catch (err) {
+    // Corrupt JSON: snapshot the bad file so we don't silently overwrite
+    // pins owned by other live processes. Without this, the next
+    // writeAtomic() blows away everyone's entries on a partial write or
+    // manual edit.
+    try {
+      const backup = `${REGISTRY_PATH}.corrupt.${Date.now()}`;
+      writeFileSync(backup, raw);
+      process.stderr.write(`tv-mcp pin-registry: corrupt JSON at ${REGISTRY_PATH} (${err.message}); backed up to ${backup}\n`);
+    } catch {}
+    return emptyRegistry();
+  }
 }
 
 function writeAtomic(data) {
@@ -56,8 +77,19 @@ async function acquireLock() {
     catch (err) {
       if (err.code !== 'EEXIST') throw err;
       try {
-        const age = Date.now() - statSync(LOCK_PATH).mtimeMs;
-        if (age > LOCK_STALE_MS) { try { unlinkSync(LOCK_PATH); } catch {} continue; }
+        const observedMtime = statSync(LOCK_PATH).mtimeMs;
+        const age = Date.now() - observedMtime;
+        if (age > LOCK_STALE_MS) {
+          // Re-stat right before unlinking to avoid a race where two
+          // processes both saw the same stale lock, both unlinked,
+          // and then process A's freshly-created lock got deleted by
+          // process B's late unlink. If mtime changed, someone else
+          // already broke the stale lock (or refreshed it); back off
+          // and retry the openSync instead of unlinking.
+          let confirmedStale = false;
+          try { confirmedStale = statSync(LOCK_PATH).mtimeMs === observedMtime; } catch {}
+          if (confirmedStale) { try { unlinkSync(LOCK_PATH); } catch {} continue; }
+        }
       } catch {}
       await new Promise(r => setTimeout(r, LOCK_RETRY_MS));
     }
@@ -73,7 +105,7 @@ async function readAndPrune() {
     const reg = readRaw();
     let mutated = false;
     for (const [tid, entry] of Object.entries(reg.pins)) {
-      if (!isAlive(entry?.pid)) { delete reg.pins[tid]; mutated = true; }
+      if (!isAlive(entry)) { delete reg.pins[tid]; mutated = true; }
     }
     if (mutated) writeAtomic(reg);
     return reg;
@@ -91,7 +123,7 @@ export async function claim(targetId, { force = false, lane = null } = {}) {
   try {
     const reg = readRaw();
     for (const [tid, entry] of Object.entries(reg.pins)) {
-      if (!isAlive(entry?.pid)) delete reg.pins[tid];
+      if (!isAlive(entry)) delete reg.pins[tid];
     }
     const existing = reg.pins[targetId];
     if (existing && existing.pid !== process.pid && !force) {
@@ -141,7 +173,7 @@ export async function releaseAll() {
     const reg = readRaw();
     let mutated = false;
     for (const [tid, entry] of Object.entries(reg.pins)) {
-      if (entry?.pid === process.pid) { delete reg.pins[tid]; mutated = true; }
+      if (entry?.pid === process.pid && entry?.host === hostname()) { delete reg.pins[tid]; mutated = true; }
     }
     if (mutated) writeAtomic(reg);
     return { released_count: Object.keys(reg.pins).length };
@@ -161,18 +193,34 @@ export async function list() {
   };
 }
 
-/** Synchronous best-effort cleanup for process exit handlers. */
+/**
+ * Synchronous best-effort cleanup for process exit handlers.
+ *
+ * CRITICAL: only mutate the registry when we actually hold the lock. If
+ * lock acquisition fails (another live process holds it), skip the
+ * read-modify-write entirely — better to leak our pin entries (which
+ * will be pruned by the next live process on its next read+prune cycle,
+ * since our PID will be dead) than to corrupt the registry by racing
+ * another writer. The previous version proceeded unconditionally and
+ * unlink'd the lock at exit, letting a third process enter the critical
+ * section while our writeAtomic was mid-rename.
+ */
 export function releaseAllSync() {
+  let locked = false;
   try {
-    try { const fd = openSync(LOCK_PATH, 'wx'); closeSync(fd); } catch {}
+    try { const fd = openSync(LOCK_PATH, 'wx'); closeSync(fd); locked = true; } catch { /* held by another process */ }
+    if (!locked) return;  // skip cleanup; our dead PID will be pruned later
     try {
       const reg = readRaw();
       let mutated = false;
       for (const [tid, entry] of Object.entries(reg.pins)) {
-        if (entry?.pid === process.pid) { delete reg.pins[tid]; mutated = true; }
+        if (entry?.pid === process.pid && entry?.host === hostname()) { delete reg.pins[tid]; mutated = true; }
       }
       if (mutated) writeAtomic(reg);
-    } finally { try { unlinkSync(LOCK_PATH); } catch {} }
+    } finally {
+      // Only remove the lock if WE created it.
+      try { unlinkSync(LOCK_PATH); } catch {}
+    }
   } catch { /* swallow — exiting anyway */ }
 }
 

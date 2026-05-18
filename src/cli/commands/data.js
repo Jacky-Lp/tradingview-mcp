@@ -24,7 +24,7 @@ register('values', {
 });
 
 register('data', {
-  description: 'Advanced data tools (lines, labels, tables, boxes, strategy, trades, equity, depth)',
+  description: 'Advanced data tools (lines, labels, tables, boxes, shapes, strategy, trades, equity, depth)',
   subcommands: new Map([
     ['lines', {
       description: 'Get Pine Script line.new() price levels',
@@ -61,6 +61,14 @@ register('data', {
         'include-empty': { type: 'boolean', description: 'Include loaded studies that drew zero boxes' },
       },
       handler: (opts) => core.getPineBoxes({ study_filter: opts.filter, verbose: opts.verbose, include_empty: opts['include-empty'] }),
+    }],
+    ['shapes', {
+      description: 'Get Pine Script plotshape/plotchar markers (triangle, diamond, cross, etc.) with OHLC at signal bars',
+      options: {
+        filter: { type: 'string', short: 'f', description: 'Filter by study name substring' },
+        bars: { type: 'string', short: 'n', description: 'Last N bars to scan (default 100, max 500)' },
+      },
+      handler: (opts) => core.getPineShapes({ study_filter: opts.filter, last_n_bars: opts.bars ? Number(opts.bars) : undefined }),
     }],
     ['strategy', {
       description: 'Get strategy performance metrics',

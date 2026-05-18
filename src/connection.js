@@ -322,6 +322,61 @@ export async function evaluateAsync(expression) {
   return evaluate(expression, { awaitPromise: true });
 }
 
+/**
+ * Defensive evaluate that survives two CDP failure modes plain `evaluate`
+ * doesn't handle:
+ *
+ *  1. **"Object reference chain is too long"** — CDP's `returnByValue:true`
+ *     serializer walks the object graph. Rich page objects (Monaco editor
+ *     refs, React fibers, chart-widget internals) blow past its depth limit
+ *     and CDP rejects the whole call. Fix: serialize on the page side with
+ *     `JSON.stringify` and ship a string instead — CDP only sees a flat
+ *     primitive and is happy.
+ *
+ *  2. **Silent truncation** — CDP can quietly drop bytes from very large
+ *     payloads (~1+ MB). We compute the string length on the page side and
+ *     verify it round-trips intact on the client side; mismatch throws.
+ *
+ * Side benefits: cyclic / unserializable values fail fast on the page side
+ * (page-side `JSON.stringify` throws with a clear message instead of CDP
+ * returning a half-serialized blob); page-side exceptions are surfaced as
+ * Error messages rather than half-formed objects.
+ *
+ * Use this in place of `evaluate()` whenever you're returning a value that
+ * (a) walks any internal TV object graph (monaco, react fibers, chartWidget,
+ * model, dataSources) or (b) may exceed a few hundred KB. For plain
+ * primitives and small flat objects, `evaluate()` is fine and cheaper.
+ *
+ * @param expression  Same expression syntax as evaluate(). Must produce a
+ *                    JSON-serializable value (or throw on the page side).
+ * @param opts.label  Optional label for error messages (default 'evaluate').
+ * @param opts.awaitPromise  Same semantics as evaluate().
+ */
+export async function evaluateChecked(expression, opts = {}) {
+  if (_testOverrides?.evaluateChecked) return _testOverrides.evaluateChecked(expression, opts);
+  const label = opts.label || 'evaluate';
+  const wrapped = `(function() {
+    var __d;
+    try { __d = (${expression}); }
+    catch (__e) { return { __err: 'page-side eval: ' + String(__e && __e.message || __e) }; }
+    var __s;
+    try { __s = JSON.stringify(__d); }
+    catch (__e) { return { __err: 'page-side JSON.stringify: ' + String(__e && __e.message || __e) }; }
+    if (__s === undefined) return { __s: 'undefined', __sz: 9, __isUndef: true };
+    return { __s: __s, __sz: __s.length };
+  })()`;
+  const result = await evaluate(wrapped, opts);
+  if (!result) throw new Error(`${label}: no result from page`);
+  if (result.__err) throw new Error(`${label}: ${result.__err}`);
+  if (result.__isUndef) return undefined;
+  if (typeof result.__s !== 'string') throw new Error(`${label}: malformed wrapper response`);
+  if (result.__s.length !== result.__sz) {
+    throw new Error(`${label}: CDP truncated response (page-side ${result.__sz} bytes, client-side ${result.__s.length} bytes)`);
+  }
+  try { return JSON.parse(result.__s); }
+  catch (e) { throw new Error(`${label}: client-side JSON.parse failed: ${e.message}`); }
+}
+
 export async function disconnect() {
   if (!client) return;
   // Send disable defensively before closing the WebSocket. Even though we

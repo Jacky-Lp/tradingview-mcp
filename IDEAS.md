@@ -41,7 +41,18 @@ Sourced from `scripts/audit_forks.sh --top 100` (report at `/tmp/fork_audit.md`)
 - ~~**prezis — `pine_deploy` (file-based atomic)**~~ — Shipped 2026-05-17. Reads `.pine` from disk, auto-derives indicator()/strategy() title for pre-clean, sets source → saves → smart_compile in one tool call. Anti-token-tax for 50–100 KB Pine files. Composes from our hardened primitives rather than verbatim port (~80 LoC orchestrator).
 - ~~**prezis — `pine_switch_script`**~~ — Shipped 2026-05-17. TV 3.1+ title-button dropdown is a context menu (Save/Copy/Rename), NOT a script list. Switching uses the Ctrl+O picker instead: focus pine editor → Ctrl+O → React-friendly setter on search input → React onClick on `.itemInfo-gisYB8vu` row → close via mouse-event sequence on `[data-qa-id="close"]`. Updates the editor's title binding (unlike `pine_open` which only rewrites source).
 - **prezis — `fib-truth.js`** exact OHLCV wick lookup for Fib ground-truth verification.
-- **KarmicP — replay CLI ergonomics.** `--chart`/`-c` to switch tab before replay; `--layout`/`-l` to load a saved layout first; compound `replay_start` accepting flexible date formats.
+- ~~**KarmicP — replay CLI ergonomics.**~~ — Shipped 2026-05-17.
+  `tv replay start` now accepts `-l/--layout` (load saved layout with
+  graceful fallback), `-c/--chart` (switch to tab by title-substring;
+  hard-error on miss to avoid replaying the wrong chart), `--tf`
+  (1m/5m/1h/4h/D/W aliases → TV-native), `-d/--date` with rich format
+  set (ISO, YYYYMMDD, YYMMDD, slash, month name, today/yesterday, -7d
+  relative), `-H/--hour` separate time, `-s/--speed` (1x..10x or raw
+  ms), `-i/--interval` (1s/1t/chart aliases). Compound flow: layout →
+  tab → tf → replay.start → speed → interval. Parsers live in
+  `src/cli/replay_parsers.js`, 29 unit tests covering all formats.
+  MCP `replay_start` unchanged — keep the wire schema minimal; Claude
+  formats dates ahead of the tool call.
 - **yaojinhui1993 — chart data download workflow.** `target_id` + filename params for bulk OHLCV export via TV's native download path; complements our 500-bar `data_get_ohlcv` cap.
 
 ## Audit 2026-05-16 — historical-replay sweep findings
@@ -52,6 +63,25 @@ ET, and compare the Pine `-4 CB Model Indicator`'s drawn line Y values to a
 Python-computed reference. **One session validated bit-exact** (2026-05-08
 NQM6, all 6 lines + OR OHLC match) but the 49-session scale-out hit the bugs
 below. Each one blocked work in this session — listed in rough priority order.
+
+### Shipped 2026-05-17 — Tier 2 fork audit ports
+
+- **`evaluateChecked`** (concept from valleyfresh, reimplemented) —
+  Defensive CDP evaluate wrapper. Page-side `JSON.stringify` returns
+  a string so CDP only ships a primitive — solves the
+  "Object reference chain is too long" failures we hit on Monaco /
+  chart-widget / fiber probes. Page-side length checksum verified
+  on client also catches silent CDP truncation. Page-side errors
+  (cycles, BigInt, runtime exceptions) surface as labeled Error
+  messages instead of half-serialized blobs. Use in place of
+  `evaluate()` for any expression returning a TV-internal object
+  graph (>~500 KB, deep React fibers).
+- **`tv data shapes` CLI** — `data_get_pine_shapes` core + MCP tool
+  were already in tree from a prior dawsman port; the CLI
+  subcommand was the missing surface area. Reads plotshape/plotchar
+  signals (triangle/diamond/cross/etc.) per study with OHLC at each
+  signal bar; the SMC / scanner / profiler Pine indicators in your
+  library all emit via this primitive.
 
 ### Shipped 2026-05-17 — Tier 1 fork audit ports
 

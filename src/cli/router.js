@@ -57,9 +57,20 @@ function printCommandHelp(name, cmd) {
  * already supplied one. Safe because no command defines a `-N` flag —
  * all our short options are `-<letter>`.
  */
-function shieldNegativePositionals(args) {
+export function shieldNegativePositionals(args) {
   if (args.includes('--')) return args;
-  const idx = args.findIndex(a => /^-\d/.test(a));
+  // Skip when the leading-hyphen-digit arg is the VALUE of a preceding
+  // short flag (e.g. `tv replay start -d -7d` — here `-7d` is the date,
+  // not a positional). Without this carve-out, inserting `--` between
+  // `-d` and `-7d` decays `-d` into a boolean flag and loses the value.
+  // We can't tell from here whether the short flag expects a value, so
+  // be conservative: any bare `-<letter>` immediately before defers.
+  const idx = args.findIndex((a, i) => {
+    if (!/^-\d/.test(a)) return false;
+    const prev = args[i - 1];
+    if (prev && /^-[a-zA-Z]$/.test(prev)) return false;
+    return true;
+  });
   if (idx === -1) return args;
   return [...args.slice(0, idx), '--', ...args.slice(idx)];
 }

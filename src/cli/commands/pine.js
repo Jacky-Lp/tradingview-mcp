@@ -1,5 +1,7 @@
 import { register } from '../router.js';
 import * as core from '../../core/pine.js';
+import * as deployCore from '../../core/pine-deploy.js';
+import * as publishCore from '../../core/pine-publish.js';
 import { readFileSync } from 'fs';
 
 async function readStdin() {
@@ -104,6 +106,22 @@ register('pine', {
     ['list', {
       description: 'List saved Pine Scripts',
       handler: () => core.listScripts(),
+    }],
+    ['deploy', {
+      description: 'File-based atomic deploy: read .pine → set source → save → Add to chart, with auto pre-clean of prior instance',
+      options: {
+        file: { type: 'string', short: 'f', description: '.pine file path (required)' },
+        'clean-match': { type: 'string', description: 'Title substring to remove from chart before deploy. Omit = auto-derive from indicator()/strategy() title. Pass empty "" to skip pre-clean.' },
+      },
+      handler: (opts) => {
+        if (!opts.file) throw new Error('--file is required. Usage: tv pine deploy --file my.pine');
+        const cleanMatch = opts['clean-match'] === '' ? null : opts['clean-match'];
+        return deployCore.deployScript({ pinePath: opts.file, cleanMatch });
+      },
+    }],
+    ['publish-inspect', {
+      description: 'Probe Pine "Publish script" dialog: click publish button + dump dialog inputs/buttons/labels (read-only, no submission)',
+      handler: () => publishCore.publishDialogInspect(),
     }],
     ['errors', {
       description: 'Get Pine Script compilation errors',

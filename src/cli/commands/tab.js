@@ -26,5 +26,24 @@ register('tab', {
         return core.switchTab({ index: positionals[0] });
       },
     }],
+    ['pin', {
+      description: 'Pin MCP to one tab (cross-instance, claims a slot in ~/.tv-mcp-registry.json). Pass exactly one of --id/--title/--symbol/--url.',
+      options: {
+        id:     { type: 'string', description: 'Exact CDP target id' },
+        title:  { type: 'string', description: 'Substring of tab title' },
+        symbol: { type: 'string', short: 's', description: 'Substring of chart symbol' },
+        url:    { type: 'string', short: 'u', description: 'Substring of tab URL' },
+        force:  { type: 'boolean', description: 'Take over an existing claim from another process' },
+      },
+      handler: (opts) => core.pin({ id: opts.id, title: opts.title, symbol: opts.symbol, url: opts.url, force: opts.force }),
+    }],
+    ['unpin', {
+      description: 'Clear the tab pin and release the registry claim',
+      handler: () => core.unpin(),
+    }],
+    ['registry', {
+      description: 'Show cross-instance pin registry (every tab claimed by any live tradingview-mcp process)',
+      handler: () => core.registryList(),
+    }],
   ]),
 });

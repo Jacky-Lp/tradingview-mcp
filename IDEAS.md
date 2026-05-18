@@ -37,7 +37,8 @@ Sourced from `scripts/audit_forks.sh --top 100` (report at `/tmp/fork_audit.md`)
 
 - **KarmicP — validate cloud-persisted values** before round-tripping (alert payloads, watchlist names, layout names). Belt-and-braces against TV-side input that bypasses our local sanitization.
 - ~~**PasanteAdmin — strict `smart_compile` honest success.**~~ — Shipped 2026-05-17. Diff studies by ID then match new study name against pine-script-title-button text.
-- **prezis — `deployMultipleScripts`** (sequential multi-script deploy with auto-switch between editor slots). Audited 2026-05-09: it's a 433-LOC workflow tool that orchestrates `setSource` + `save` + `add-to-chart` per script. Our existing primitives (`pine_set_source`, `pine_smart_compile`, `pine_save`, `chart_manage_indicator`, `pine_switch_script`) compose well enough for callers to chain themselves. Worth porting only if user-facing demand surfaces.
+- **prezis — `deployMultipleScripts`** (sequential multi-script deploy with auto-switch between editor slots). Audited 2026-05-09: it's a 433-LOC workflow tool that orchestrates `setSource` + `save` + `add-to-chart` per script. Our existing primitives (`pine_set_source`, `pine_smart_compile`, `pine_save`, `chart_manage_indicator`, `pine_switch_script`, `pine_deploy`) compose well enough for callers to chain themselves. Worth porting only if user-facing demand surfaces.
+- ~~**prezis — `pine_deploy` (file-based atomic)**~~ — Shipped 2026-05-17. Reads `.pine` from disk, auto-derives indicator()/strategy() title for pre-clean, sets source → saves → smart_compile in one tool call. Anti-token-tax for 50–100 KB Pine files. Composes from our hardened primitives rather than verbatim port (~80 LoC orchestrator).
 - ~~**prezis — `pine_switch_script`**~~ — Shipped 2026-05-17. TV 3.1+ title-button dropdown is a context menu (Save/Copy/Rename), NOT a script list. Switching uses the Ctrl+O picker instead: focus pine editor → Ctrl+O → React-friendly setter on search input → React onClick on `.itemInfo-gisYB8vu` row → close via mouse-event sequence on `[data-qa-id="close"]`. Updates the editor's title binding (unlike `pine_open` which only rewrites source).
 - **prezis — `fib-truth.js`** exact OHLCV wick lookup for Fib ground-truth verification.
 - **KarmicP — replay CLI ergonomics.** `--chart`/`-c` to switch tab before replay; `--layout`/`-l` to load a saved layout first; compound `replay_start` accepting flexible date formats.
@@ -51,6 +52,49 @@ ET, and compare the Pine `-4 CB Model Indicator`'s drawn line Y values to a
 Python-computed reference. **One session validated bit-exact** (2026-05-08
 NQM6, all 6 lines + OR OHLC match) but the 49-session scale-out hit the bugs
 below. Each one blocked work in this session — listed in rough priority order.
+
+### Shipped 2026-05-17 — Tier 1 fork audit ports
+
+Sourced from fork audit at `/tmp/fork_audit_2026-05-17.md`.
+
+- **`strategy_set_deep_bt_range`** (from jacktradesnq) — drives the
+  Strategy Tester Deep Backtesting calendar via DOM: opens picker,
+  fills two YYYY-MM-DD inputs via React-friendly setter, clicks
+  locale-appropriate submit (Select / Sélectionner / Apply / OK),
+  verifies displayed range. Useful for historical-replay sweep
+  workflows that need to scope a strategy backtest before re-run.
+- **`news_get_ticker` + `signal_get_snapshot`** (from QuantAgentLabs)
+  — RSS pull from Nasdaq + Yahoo Finance with keyword sentiment
+  scoring; SP:SPX/NDX/DJI/RUT/VIX auto-route to tracking ETFs for
+  news lookup. `signal_get_snapshot` rolls quote + 100-bar price
+  action (SMA20/50, ATR14) + visible indicators + news into one
+  compact response, each section degrading gracefully on failure.
+- **`screener_scan`** (from QuantAgentLabs) — flexible scan of TV's
+  public scanner endpoint with market presets
+  (stock/etf/crypto/forex/futures/index), ticker hydration via
+  `symbolSearch`, exchange filter, sort, and numeric range filters
+  on price/volume/change. More flexible than the fixed-slug
+  `hotlist_get`.
+- **`pine_deploy`** (from prezis) — file-based atomic deploy:
+  read `.pine` from disk → pre-clean (auto-derived from
+  `indicator()` / `strategy()` title) → setSource → save →
+  smart_compile. Anti-token-tax for big Pine files (50–100 KB).
+  Composes from our hardened primitives.
+- **`pine_publish_dialog_inspect`** (from jacktradesnq) — read-only
+  probe for the Pine "Publish script" dialog. Active publish flow
+  deferred — upstream impl is French-locale-only with TV-build-
+  hashed CSS classes; needs per-build adaptation. Inspect is the
+  unblocker.
+- **Tab pinning + cross-instance registry** (from ogdeeeezy) —
+  `tab_pin {id|title|symbol|url}` makes one tab deterministic for
+  every subsequent MCP call; `tab_unpin` releases. Cross-instance
+  registry at `~/.tv-mcp-registry.json` prevents two Claude
+  sessions from claiming the same tab (`PIN_CONFLICT` unless
+  `force=true`). `TV_MCP_TARGET_FILTER` env (`symbol=ES1!`,
+  `title~ICC`, `url=chart/Wfn4`, `id=ABC123`) narrows auto-pick
+  candidates at startup. Per-process pins released on exit.
+  Added without regressing our EPIPE-on-close fix, `withReconnect`,
+  liveness-timeout, or focus-emulation paths.
 
 ### Shipped 2026-05-17
 

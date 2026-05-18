@@ -1,4 +1,5 @@
 import CDP from 'chrome-remote-interface';
+import { claim as _registryClaim, release as _registryRelease, releaseAllSync as _registryReleaseAllSync } from './core/pin_registry.js';
 
 let client = null;
 let targetInfo = null;
@@ -185,12 +186,108 @@ export async function connect() {
   throw new Error(`CDP connection failed after ${MAX_RETRIES} attempts: ${lastError?.message}`);
 }
 
+// ── Tab pinning (per-process) + startup filter (env-driven) ─────────────
+//
+// Both knobs let multi-tab TV setups deterministically route MCP calls.
+//   - `setPin(targetId)` is in-process: subsequent CDP calls bind to that
+//     tab regardless of which is "active" in TV.
+//   - `TV_MCP_TARGET_FILTER=symbol=ES1!` (or title/url/id) is read once at
+//     startup and narrows the auto-pick candidate set when no pin is set.
+// Cross-instance coordination (so two Claude sessions don't fight over
+// the same tab) is layered on via core/pin_registry.js — see
+// `claimAndPin` / `releaseAndUnpin` below.
+let pinnedTargetId = null;
+const activeFilter = parseFilter(process.env.TV_MCP_TARGET_FILTER);
+
+function parseFilter(raw) {
+  if (!raw) return null;
+  const m = String(raw).match(/^(symbol|title|url|id)\s*([=~])\s*(.+)$/i);
+  if (!m) throw new Error(`Invalid TV_MCP_TARGET_FILTER: ${raw}. Expected <field><op><value> where field is symbol|title|url|id and op is = or ~.`);
+  return { field: m[1].toLowerCase(), op: m[2], value: m[3].trim() };
+}
+
+function targetMatchesFilter(target, filter) {
+  if (!filter) return true;
+  const { field, value } = filter;
+  if (field === 'id') return target.id === value;
+  // symbol/title/url all live in title or URL on TV chart targets;
+  // URL is the reliable signal for symbol since the title is generic.
+  const haystack = field === 'title' ? (target.title || '') : (target.url || '');
+  return haystack.toLowerCase().includes(value.toLowerCase());
+}
+
+export function setPin(targetId) {
+  pinnedTargetId = targetId;
+  // Drop the cached client so the next call rebinds to the new pin.
+  if (client) { try { client.close(); } catch {} client = null; targetInfo = null; }
+}
+export function clearPin() { setPin(null); }
+export function getPin() { return pinnedTargetId; }
+export function getActiveFilter() { return activeFilter; }
+
+/**
+ * Claim a target in the cross-instance registry, then pin it in-process.
+ * Throws with `err.code === 'PIN_CONFLICT'` if another live process owns
+ * it (unless `force: true`). Registers the exit-time cleanup hook the
+ * first time it's called so this process's claims don't outlive it.
+ */
+export async function claimAndPin(targetId, { force = false, lane = null } = {}) {
+  ensureRegistryExitHandler();
+  const prev = pinnedTargetId;
+  const result = await _registryClaim(targetId, { force, lane });
+  setPin(targetId);
+  // Release any prior pin we held — moving to a new tab.
+  if (prev && prev !== targetId) {
+    try { await _registryRelease(prev); } catch {}
+  }
+  return result;
+}
+
+/** Release the cross-instance claim AND clear the in-process pin. */
+export async function releaseAndUnpin() {
+  const prev = pinnedTargetId;
+  setPin(null);
+  if (prev) return _registryRelease(prev);
+  return { released: false };
+}
+
+let _registryExitRegistered = false;
+function ensureRegistryExitHandler() {
+  if (_registryExitRegistered) return;
+  _registryExitRegistered = true;
+  // releaseAllSync is best-effort and swallows its own errors — safe to
+  // attach to multiple signals without double-cleanup concerns.
+  process.on('exit', _registryReleaseAllSync);
+  process.on('SIGINT', () => { _registryReleaseAllSync(); process.exit(130); });
+  process.on('SIGTERM', () => { _registryReleaseAllSync(); process.exit(143); });
+}
+
 async function findChartTarget() {
   const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
   const targets = await resp.json();
-  // Prefer targets with tradingview.com/chart in the URL
-  return targets.find(t => t.type === 'page' && /tradingview\.com\/chart/i.test(t.url))
-    || targets.find(t => t.type === 'page' && /tradingview/i.test(t.url))
+  const pages = targets.filter(t => t.type === 'page');
+
+  // 1. In-process pin wins. Hard-fail if the pinned tab is gone, so
+  //    callers learn immediately rather than silently drifting onto a
+  //    different chart.
+  if (pinnedTargetId) {
+    const pinned = pages.find(t => t.id === pinnedTargetId);
+    if (!pinned) {
+      throw new Error(`Pinned target ${pinnedTargetId} not found. Tab may have been closed — call tab_unpin or tab_pin <new-id>.`);
+    }
+    return pinned;
+  }
+
+  // 2. Startup filter narrows the candidate set; empty = error.
+  const tvPages = pages.filter(t => /tradingview\.com\/chart/i.test(t.url) || /tradingview/i.test(t.url));
+  const candidates = activeFilter ? tvPages.filter(t => targetMatchesFilter(t, activeFilter)) : tvPages;
+  if (activeFilter && candidates.length === 0) {
+    throw new Error(`No TradingView tab matches filter ${activeFilter.field}${activeFilter.op}${activeFilter.value}. Open the tab or change TV_MCP_TARGET_FILTER.`);
+  }
+
+  // 3. Default: prefer /chart over generic TradingView pages.
+  return candidates.find(t => /tradingview\.com\/chart/i.test(t.url))
+    || candidates.find(t => /tradingview/i.test(t.url))
     || null;
 }
 

@@ -3,7 +3,8 @@
  * Controls TradingView Desktop tabs via CDP and Electron keyboard shortcuts.
  */
 import CDP from 'chrome-remote-interface';
-import { getClient, connectToTarget, getTargetInfo } from '../connection.js';
+import { getClient, connectToTarget, getTargetInfo, claimAndPin, releaseAndUnpin, getPin } from '../connection.js';
+import * as registry from './pin_registry.js';
 
 const CDP_HOST = process.env.TV_CDP_HOST || 'localhost';
 const CDP_PORT = Number(process.env.TV_CDP_PORT) || 9222;
@@ -326,4 +327,87 @@ export async function switchTabByName({ name, _deps } = {}) {
   }
 
   return switchTab({ index: match.index });
+}
+
+// ── Pin / unpin / registry ───────────────────────────────────────────────
+//
+// Pin one TV tab as the deterministic CDP target for this process. The
+// in-process pin lives in connection.js; the cross-instance registry
+// (~/.tv-mcp-registry.json) makes two parallel Claude sessions safe by
+// refusing double-claims of the same targetId.
+//
+// Match-by-symbol is implemented through tab `list()` — which already
+// reads the active Pine script name + chart symbol per tab — so callers
+// can target "the GC1! tab" without knowing the CDP target id.
+
+/**
+ * Pin to one tab by id | title | symbol | url. Exactly one must be set.
+ * Returns { success, action, target_id, matched_by, force, displaced? }
+ * on success; throws (with `err.code === 'PIN_CONFLICT'` + `err.owner`)
+ * if another live process owns the tab and `force=false`.
+ */
+export async function pin({ id, title, symbol, url, force = false, _deps } = {}) {
+  const provided = [id, title, symbol, url].filter(v => v !== undefined && v !== null && v !== '');
+  if (provided.length !== 1) {
+    throw new Error('tab_pin requires exactly one of: id, title, symbol, url');
+  }
+
+  const tabs = (await list({ _deps })).tabs || [];
+  let match = null;
+  let matchedBy = null;
+  if (id) {
+    match = tabs.find(t => t.id === id);
+    matchedBy = 'id';
+    if (!match) throw new Error(`No tab with id=${id}. Use tab_list to enumerate.`);
+  } else if (title) {
+    const needle = title.toLowerCase();
+    match = tabs.find(t => (t.title || '').toLowerCase().includes(needle));
+    matchedBy = 'title';
+    if (!match) throw new Error(`No tab title matches "${title}"`);
+  } else if (symbol) {
+    const needle = symbol.toLowerCase();
+    match = tabs.find(t => (t.symbol || '').toLowerCase().includes(needle));
+    matchedBy = 'symbol';
+    if (!match) throw new Error(`No tab symbol matches "${symbol}"`);
+  } else if (url) {
+    const needle = url.toLowerCase();
+    match = tabs.find(t => (t.url || '').toLowerCase().includes(needle));
+    matchedBy = 'url';
+    if (!match) throw new Error(`No tab url matches "${url}"`);
+  }
+
+  let claim;
+  try {
+    claim = await claimAndPin(match.id, { force });
+  } catch (err) {
+    if (err.code === 'PIN_CONFLICT') {
+      return {
+        success: false, conflict: true,
+        target_id: match.id, matched_by: matchedBy,
+        owner: err.owner,
+        hint: 'Pass force=true to take over the pin.',
+      };
+    }
+    throw err;
+  }
+
+  return {
+    success: true,
+    action: 'pinned',
+    target_id: match.id,
+    matched_by: matchedBy,
+    force,
+    displaced: claim.displaced,
+  };
+}
+
+export async function unpin() {
+  const prev = getPin();
+  const result = await releaseAndUnpin();
+  return { success: true, action: 'unpinned', previous_pin: prev, released: result.released };
+}
+
+/** Read-only view of the cross-instance pin registry. */
+export async function registryList() {
+  return registry.list();
 }

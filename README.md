@@ -175,17 +175,19 @@ tv stream quote | jq '.close'      # monitor price changes
 tv status / launch / ensure / reconnect / state / symbol / timeframe / type / info / search
 tv quote / ohlcv / values
 tv data lines/labels/tables/boxes/shapes/strategy/trades/equity/depth/indicator
-tv pine get/set/compile/analyze/check/save/save-as/rename/new/open/list/switch/delete/errors/console/version-history
+tv pine get/set/compile/raw-compile/analyze/check/save/new/open/list/switch/deploy/publish-inspect/errors/console
 tv draw shape/position/list/get/remove/clear
 tv alert list/create/delete
 tv watchlist get/add/add-bulk/remove
 tv indicator set/toggle
 tv layout list/switch
 tv pane list/layout/focus/symbol/timeframe/read-batch
-tv tab list/new/close/switch/switch-by-name
+tv tab list/new/close/switch/pin/unpin/registry
 tv replay start/step/stop/status/autoplay/trade/set-resolution
 tv stream quote/bars/values/lines/labels/tables/all
 tv ui click/keyboard/hover/scroll/find/type/panel/fullscreen/mouse
+tv hotlist / screener / news / snapshot
+tv strategy set-deep-bt-range
 tv screenshot / discover / ui-state / range / scroll
 ```
 
@@ -224,7 +226,7 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 | "Draw a level at 24500" | `draw_shape` (horizontal_line) |
 | "Take a screenshot" | `capture_screenshot` |
 
-## Tool Reference (96 MCP tools)
+## Tool Reference (108 MCP tools)
 
 ### Chart Reading
 
@@ -234,7 +236,6 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 | `data_get_study_values` | Read current RSI, MACD, BB, EMA values from all indicators | ~500B |
 | `data_get_multi_timeframe` | Iterate a list of timeframes and read indicator values + price summary on each (top-down analysis) | ~1-2KB |
 | `data_detect_candlestick_patterns` | Native scan over OHLC for 17 classic patterns (doji, hammer, engulfing, stars, soldiers/crows) | ~1-3KB |
-| `hotlist_get` | Fetch a TradingView US hotlist (volume_gainers, gap_gainers, percent_change_gainers/losers, etc.) — up to 20 symbols, no auth | ~1-2KB |
 | `quote_get` | Get latest price, OHLC, volume | ~200B |
 | `data_get_ohlcv` | Get price bars. **Use `summary: true`** for compact stats | 500B (summary) / 8KB (100 bars) |
 | `depth_get` | DOM / order book bid/ask levels (panel must be open) | ~1KB |
@@ -261,8 +262,24 @@ Read backtest results from a Pine Script strategy on the chart. The Strategy Tes
 | Tool | What it reads |
 |------|---------------|
 | `data_get_strategy_results` | Strategy performance metrics (net profit, win rate, drawdown, etc.) |
+| `data_get_strategy_info` | Active strategy name + Strategy Tester date range — sanity-check before reading metrics |
 | `data_get_trades` | Individual trade list with entry/exit, P&L per trade |
 | `data_get_equity` | Equity curve data points |
+| `strategy_set_deep_bt_range` | Set the Deep Backtesting date range via the Strategy Tester calendar picker |
+
+### News & Signals
+
+| Tool | What it does |
+|------|-------------|
+| `news_get_ticker` | Latest ticker-specific headlines (Nasdaq + Yahoo Finance RSS) with keyword sentiment scoring. Index symbols (SPX, NDX, DJI, RUT, VIX) auto-route to their tracking ETF |
+| `signal_get_snapshot` | Compact one-shot bundle: quote + 100-bar price action (SMA20/50, ATR14, %change) + volume-vs-avg + visible indicator values + latest news with sentiment. Sections degrade gracefully |
+
+### Screener
+
+| Tool | What it does |
+|------|-------------|
+| `screener_scan` | Scan TradingView screeners (stocks, ETFs, crypto, forex, futures, indices) via the public scanner endpoint. Market presets, keyword search, explicit ticker hydration, exchange + numeric range filters |
+| `hotlist_get` | Fetch a TradingView US hotlist (volume_gainers, gap_gainers, percent_change_gainers/losers, etc.) — up to 20 symbols, no auth |
 
 ### Chart Control
 
@@ -272,6 +289,7 @@ Read backtest results from a Pine Script strategy on the chart. The Strategy Tes
 | `chart_set_timeframe` | Change resolution (1, 5, 15, 60, D, W, M) |
 | `chart_set_type` | Change style (Candles, HeikinAshi, Line, Area, Renko) |
 | `chart_manage_indicator` | Add/remove indicators. **Use full names**: "Relative Strength Index" not "RSI" |
+| `chart_remove_studies_by_title` | Remove all studies whose name contains a case-insensitive substring (bulk cleanup of duplicates) |
 | `chart_scroll_to_date` | Jump to a date (ISO: "2025-01-15") |
 | `chart_set_visible_range` | Zoom to exact range (unix timestamps) |
 | `chart_get_visible_range` | Read the current visible date range and bars range |
@@ -298,6 +316,9 @@ Read backtest results from a Pine Script strategy on the chart. The Strategy Tes
 | `tab_new` / `tab_close` | Open/close tabs |
 | `tab_switch` | Switch to a tab by index |
 | `tab_switch_by_name` | Switch by Pine script name (exact match → substring fallback) |
+| `tab_pin` | Pin the MCP to one specific tab so every call deterministically targets it (cross-instance registry at `~/.tv-mcp-registry.json`) |
+| `tab_unpin` | Clear the tab pin and release the registry claim |
+| `tab_registry` | Read-only view of the cross-instance pin registry — check before `tab_pin` |
 
 ### Pine Script Development
 
@@ -319,6 +340,8 @@ Read backtest results from a Pine Script strategy on the chart. The Strategy Tes
 | `pine_open` / `pine_list_scripts` | Open or list saved scripts |
 | `pine_analyze` | Offline static analysis (no chart needed) |
 | `pine_check` | Server-side compile check (no chart needed) |
+| `pine_deploy` | One-shot deploy from a `.pine` file on disk: `pine_set_source` + `pine_save` + `pine_smart_compile`, with auto-derived pre-clean of any prior chart instance. Source is never embedded in the call — no token tax on big scripts |
+| `pine_publish_dialog_inspect` | **Read-only** probe of the "Publish script" dialog — dumps every input/button/heading with class names + label text for selector discovery. Does not submit |
 
 ### Replay Mode
 
@@ -348,6 +371,7 @@ Read backtest results from a Pine Script strategy on the chart. The Strategy Tes
 | Tool | What it does |
 |------|-------------|
 | `alert_create` | Create a price alert via TV's create-alert dialog |
+| `alert_create_indicator` | Create an indicator alert that fires on a Pine `alertcondition()` signal (e.g. strategy BUY/SELL → webhook). Posts to the `pricealerts` REST API |
 | `alert_list` | List active alerts (uses the pricealerts REST API) |
 | `alert_delete` | Delete one or all alerts |
 
@@ -436,7 +460,7 @@ npm test
 Claude Code  ←→  MCP Server (stdio)  ←→  CDP (port 9222)  ←→  TradingView Desktop (Electron)
 ```
 
-- **Transport**: MCP over stdio (96 tools) + CLI (`tv` command, 31 commands with 66 subcommands)
+- **Transport**: MCP over stdio (108 tools) + CLI (`tv` command, pipe-friendly JSON output)
 - **Connection**: Chrome DevTools Protocol on localhost:9222
 - **Streaming**: Poll-and-diff loop with deduplication, JSONL output to stdout
 - **No dependencies** beyond `@modelcontextprotocol/sdk` and `chrome-remote-interface`

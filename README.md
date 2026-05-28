@@ -81,7 +81,7 @@ Gives your AI assistant eyes and hands on your own chart:
 
 Paste this into Claude Code and it will handle the rest:
 
-> Install the TradingView MCP server. Clone https://github.com/iliaal/tradingview-mcp.git, run npm install, add it to my MCP config at ~/.claude/.mcp.json, and launch TradingView with the debug port. Then verify the connection with tv_health_check.
+> Install the TradingView MCP server. Clone https://github.com/iliaal/tradingview-mcp.git, run npm install, register it with `claude mcp add tradingview --scope user -- node <repo>/src/server.js`, and launch TradingView with the debug port. Then verify the connection with tv_health_check.
 
 Or follow the manual steps below.
 
@@ -124,7 +124,16 @@ scripts\launch_tv_debug.bat
 
 ### 3. Add to Claude Code
 
-Add to your Claude Code MCP config (`~/.claude/.mcp.json` or project `.mcp.json`):
+Easiest — let the CLI write the config for you:
+
+```bash
+claude mcp add tradingview --scope user -- node /path/to/tradingview-mcp/src/server.js
+```
+
+Or edit the config by hand. Claude Code reads MCP servers from one of two locations (not `~/.claude/.mcp.json` — that path is ignored):
+
+- **User scope:** `~/.claude.json`, under the top-level `mcpServers` key.
+- **Project scope:** `<project-root>/.mcp.json`.
 
 ```json
 {

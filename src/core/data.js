@@ -3,6 +3,7 @@
  */
 import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, KNOWN_PATHS, safeString } from '../connection.js';
 import { setTimeframe as _setTimeframe, setSymbol as _setSymbol } from './chart.js';
+import { waitForChartReady as _waitForChartReady } from '../wait.js';
 import { detectPatternsInBars, KNOWN_PATTERNS } from './patterns.js';
 
 function _resolve(deps) {
@@ -10,6 +11,7 @@ function _resolve(deps) {
     evaluate: deps?.evaluate || _evaluate,
     evaluateAsync: deps?.evaluateAsync || _evaluateAsync,
     setSymbol: deps?.setSymbol || _setSymbol,
+    waitForChartReady: deps?.waitForChartReady || _waitForChartReady,
   };
 }
 
@@ -141,9 +143,7 @@ function _toEpochSeconds(val) {
   return Math.floor(t / 1000);
 }
 
-export async function getOhlcv({ count, summary, _deps } = {}) {
-  const { evaluate } = _resolve(_deps);
-  const limit = Math.min(count || 100, MAX_OHLCV_BARS);
+async function _readOhlcvBars({ limit, evaluate }) {
   let data;
   try {
     data = await evaluate(`
@@ -161,11 +161,10 @@ export async function getOhlcv({ count, summary, _deps } = {}) {
       })()
     `);
   } catch { data = null; }
+  return data;
+}
 
-  if (!data || !data.bars || data.bars.length === 0) {
-    throw new Error('Could not extract OHLCV data. The chart may still be loading.');
-  }
-
+function _formatOhlcv({ data, summary }) {
   if (summary) {
     const bars = data.bars;
     const highs = bars.map(b => b.high);
@@ -185,8 +184,66 @@ export async function getOhlcv({ count, summary, _deps } = {}) {
       last_5_bars: bars.slice(-5),
     };
   }
-
   return { success: true, bar_count: data.bars.length, total_available: data.total_bars, source: data.source, bars: data.bars };
+}
+
+export async function getOhlcv({ symbol, count, summary, _deps } = {}) {
+  const { evaluate, setSymbol, waitForChartReady } = _resolve(_deps);
+  const limit = Math.min(count || 100, MAX_OHLCV_BARS);
+
+  // No symbol or symbol matches active chart → read in place. Same shape as
+  // before — symbol parameter is a transparent passthrough in this case.
+  let activeSymbol = null;
+  if (symbol) {
+    try { activeSymbol = await evaluate(`${CHART_API}.symbol()`); } catch { /* ignore */ }
+  }
+  const symbolMatchesActive = !symbol || (activeSymbol && _bareSymbol(activeSymbol) === _bareSymbol(symbol));
+  if (symbolMatchesActive) {
+    const data = await _readOhlcvBars({ limit, evaluate });
+    if (!data || !data.bars || data.bars.length === 0) {
+      throw new Error('Could not extract OHLCV data. The chart may still be loading.');
+    }
+    return _formatOhlcv({ data, summary });
+  }
+
+  // Cross-symbol read: switch the chart, read bars for the new symbol,
+  // then restore the original symbol so the user's view isn't disturbed.
+  // Mirrors getQuote's chart_switch path. Without this, callers that pass
+  // `symbol` get back whatever was on the active chart, silently labelled
+  // as the requested symbol.
+  let restoreSymbol = activeSymbol;
+  if (!restoreSymbol) {
+    try {
+      const probe = await evaluate(`
+        (function() {
+          try { return { symbol: ${CHART_API}.symbol() }; }
+          catch (e) { return { error: e.message }; }
+        })()
+      `);
+      if (probe && probe.symbol) restoreSymbol = probe.symbol;
+    } catch { /* fall through with restoreSymbol still null */ }
+  }
+
+  await setSymbol({ symbol, _deps });
+  // Wait for the new symbol's bars to actually populate. `setSymbol`
+  // returns once chart.symbol() matches, but `bars.valueAt()` can still
+  // return the previous symbol's cached values for a few hundred ms.
+  try { await waitForChartReady(symbol); } catch { /* best-effort */ }
+
+  let data;
+  let restored = false;
+  try {
+    data = await _readOhlcvBars({ limit, evaluate });
+  } finally {
+    if (restoreSymbol) {
+      try { await setSymbol({ symbol: restoreSymbol, _deps }); restored = true; } catch { /* best-effort restore */ }
+    }
+  }
+
+  if (!data || !data.bars || data.bars.length === 0) {
+    throw new Error('Could not extract OHLCV data after symbol switch. The chart may still be loading.');
+  }
+  return { ..._formatOhlcv({ data, summary }), source: 'chart_switch', restored };
 }
 
 export async function getIndicator({ entity_id, _deps }) {

@@ -13,12 +13,13 @@ register('quote', {
 });
 
 register('ohlcv', {
-  description: 'Get OHLCV bar data',
+  description: 'Get OHLCV bar data. Pass a symbol to read a non-active ticker (chart-switches, reads, restores).',
   options: {
     count: { type: 'string', short: 'n', description: 'Number of bars (default 100, max 500)' },
     summary: { type: 'boolean', short: 's', description: 'Return summary stats instead of all bars' },
   },
-  handler: (opts) => core.getOhlcv({
+  handler: (opts, positionals) => core.getOhlcv({
+    symbol: positionals[0],
     count: opts.count ? Number(opts.count) : undefined,
     summary: opts.summary,
   }),

@@ -919,12 +919,39 @@ export async function openScript({ name, id, _deps }) {
             .then(function(data) {
               var source = data.source || '';
               if (!source) return {error: 'Script source is empty', name: match.scriptName || match.scriptTitle};
+
+              // Prefer pineEditorTestApi when available: it dispatches the same
+              // fetchAndOpenScript Redux action TV's File → Open UI fires,
+              // atomically rebinding the editor's active script slot
+              // (state.script.scriptIdPart). Without this, a bare
+              // m.editor.setValue() updates only Monaco's text buffer; the
+              // next pine_save / pine_compile fires its save against the
+              // PREVIOUSLY-bound slot and silently clobbers an unrelated
+              // cloud script. Three reproductions documented upstream
+              // (PR tradesdontlie/tradingview-mcp#158).
+              var testApi = window.TradingViewApi && typeof window.TradingViewApi.pineEditorTestApi === 'function'
+                ? window.TradingViewApi.pineEditorTestApi()
+                : null;
+              if (testApi && typeof testApi.openScript === 'function' && typeof testApi.openEditor === 'function') {
+                return testApi.openEditor()
+                  .then(function() { return testApi.openScript({scriptIdPart: id, version: ver}); })
+                  .then(function() {
+                    return {success: true, name: match.scriptName || match.scriptTitle, id: id, version: ver, lines: source.split('\\n').length, slot_rebound: true};
+                  })
+                  .catch(function(e) {
+                    return {error: 'pineEditorTestApi.openScript failed: ' + (e && e.message || String(e)), name: match.scriptName || match.scriptTitle};
+                  });
+              }
+
+              // Fallback for pre-testApi TV builds. Flag slot_rebound:false
+              // so callers can detect the unsafe path and avoid a subsequent
+              // pine_save / pine_compile that would clobber the prior slot.
               var m = ${FIND_MONACO};
               if (m) {
                 m.editor.setValue(source);
-                return {success: true, name: match.scriptName || match.scriptTitle, id: id, lines: source.split('\\n').length};
+                return {success: true, name: match.scriptName || match.scriptTitle, id: id, version: ver, lines: source.split('\\n').length, slot_rebound: false, warning: 'pineEditorTestApi unavailable on this TV build; fell back to setValue. A subsequent pine_save / pine_compile may clobber the previously-bound slot.'};
               }
-              return {error: 'Monaco editor not found to inject source', name: match.scriptName || match.scriptTitle};
+              return {error: 'Monaco editor not found to inject source and pineEditorTestApi unavailable', name: match.scriptName || match.scriptTitle};
             });
         })
         .catch(function(e) { return {error: e.message}; });
@@ -935,7 +962,17 @@ export async function openScript({ name, id, _deps }) {
     throw new Error(result.error);
   }
 
-  return { success: true, name: result.name, script_id: result.id, lines: result.lines, source: 'internal_api', opened: true };
+  return {
+    success: true,
+    name: result.name,
+    script_id: result.id,
+    version: result.version,
+    lines: result.lines,
+    slot_rebound: result.slot_rebound,
+    warning: result.warning,
+    source: 'internal_api',
+    opened: true,
+  };
 }
 
 export async function listScripts({ _deps } = {}) {

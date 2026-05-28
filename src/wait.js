@@ -122,6 +122,71 @@ export async function waitForChartReady(expectedSymbol = null, _expectedTf = nul
 }
 
 /**
+ * Wait until the visible chart canvas has stabilized — symbol, resolution,
+ * and canvas dimensions all consistent across consecutive polls with no
+ * loading spinner present. Cheaper than waitForStudiesReady (no study
+ * pipeline introspection), aimed at screenshot callers who only care that
+ * the frame they're about to capture isn't mid-repaint. Returns true on
+ * stable, false on timeout.
+ */
+export async function waitForChartRender(timeout = 5000) {
+  const start = Date.now();
+  let lastSignature = null;
+  let stableCount = 0;
+
+  while (Date.now() - start < timeout) {
+    const state = await evaluate(`
+      (function() {
+        var canvas = document.querySelector('[data-name="pane-canvas"] canvas')
+          || document.querySelector('[data-name="pane-canvas"]')
+          || document.querySelector('canvas');
+        var rect = canvas ? canvas.getBoundingClientRect() : null;
+
+        var symbol = '';
+        var resolution = '';
+        try {
+          var chart = window.TradingViewApi._activeChartWidgetWV.value();
+          symbol = chart.symbol();
+          resolution = chart.resolution();
+        } catch(e) {}
+
+        var spinner = document.querySelector('[class*="loader"]')
+          || document.querySelector('[class*="loading"]')
+          || document.querySelector('[data-name="loading"]');
+
+        return {
+          symbol: symbol,
+          resolution: resolution,
+          isLoading: !!(spinner && spinner.offsetParent !== null),
+          canvasWidth: rect ? Math.round(rect.width) : 0,
+          canvasHeight: rect ? Math.round(rect.height) : 0,
+        };
+      })()
+    `);
+
+    if (!state || state.isLoading || !state.canvasWidth || !state.canvasHeight) {
+      stableCount = 0;
+      await new Promise(r => setTimeout(r, POLL_INTERVAL));
+      continue;
+    }
+
+    const signature = [state.symbol, state.resolution, state.canvasWidth, state.canvasHeight].join('|');
+    if (signature === lastSignature) {
+      stableCount++;
+    } else {
+      stableCount = 0;
+      lastSignature = signature;
+    }
+
+    if (stableCount >= 3) return true;
+
+    await new Promise(r => setTimeout(r, POLL_INTERVAL));
+  }
+
+  return false;
+}
+
+/**
  * Wait until all Pine studies have finished re-executing.
  * Polls the studies' _graphics._primitivesCollection (labels/lines/boxes/tables)
  * plus the main series last-bar timestamp, and waits for the combined signature

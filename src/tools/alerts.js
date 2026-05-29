@@ -30,8 +30,8 @@ export function registerAlertTools(server) {
   server.tool('alert_create_indicator', 'Create an indicator alert that fires on a Pine alertcondition() signal (e.g. strategy BUY/SELL). Posts directly to pricealerts.tradingview.com/create_alert with an alert_cond condition. Companion to alert_create (which targets the price-alert dialog). Returns alert_id on success.', {
     pine_id: z.string().describe('Saved Pine script id (e.g. "USER;abc123...") from pine_list_scripts.'),
     alert_cond_id: z.string().describe('Pine plot index of the target alertcondition (e.g. "plot_12"). TV counts plot/plotshape/bgcolor/alertcondition in source order; hline does NOT count. To discover: create one alert manually in the TV UI, then call alert_list and read the alert_cond_id.'),
-    inputs: z.record(z.any()).describe('Pine input map matching the script\'s input.X declarations in order. Must include `__profile: false` and `pineFeatures` bitset. Example: { pineFeatures: \'{"indicator":1,"plot":1,"ta":1,"alertcondition":1}\', in_0: 14, in_1: 75, __profile: false }'),
-    offsets_by_plot: z.record(z.number()).describe('Plot offsets map: { plot_0: 0, plot_1: 0, ..., plot_N-1: 0 } where N = the alert_cond_id index. Each plot before the alertcondition needs an entry, all zero is fine.'),
+    inputs: z.record(z.string(), z.any()).describe('Pine input map matching the script\'s input.X declarations in order. Must include `__profile: false` and `pineFeatures` bitset. Example: { pineFeatures: \'{"indicator":1,"plot":1,"ta":1,"alertcondition":1}\', in_0: 14, in_1: 75, __profile: false }'),
+    offsets_by_plot: z.record(z.string(), z.number()).describe('Plot offsets map: { plot_0: 0, plot_1: 0, ..., plot_N-1: 0 } where N = the alert_cond_id index. Each plot before the alertcondition needs an entry, all zero is fine.'),
     pine_version: z.string().optional().describe('Saved script version from pine_list_scripts (default "1.0")'),
     symbol: z.string().optional().describe('TV symbol (e.g. "OANDA:USDJPY"). Defaults to active chart.'),
     currency: z.string().optional().describe('currency-id for the symbol marker (e.g. "JPY", "USD"). Defaults to active chart.'),

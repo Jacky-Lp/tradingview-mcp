@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-06
+
+Upstream ports (screenshot render-wait, MCP config path, OHLCV symbol
+parameter), a full-codebase correctness and security sweep, and the first
+end-to-end validation pass against TV Desktop 3.2.0. The 3.2.0 auto-update
+surfaced two Pine-editor API regressions — one fixed (`saveAs` script-id
+extraction), one documented and deferred (`pine_open` slot rebind). No
+breaking API changes.
+
+### Added
+
+- **`capture_screenshot wait_for_render`** — opt-in stabilizer that waits
+  for the chart canvas to settle (same symbol/resolution/size across
+  consecutive polls, no loading spinner) before capturing, so a shot taken
+  right after `chart_set_symbol` / `chart_set_timeframe` doesn't catch the
+  previous frame. Surfaced via MCP, CLI (`-w` / `--wait-for-render`), and
+  core; default off. Echoes `waited_for_render` and discloses
+  `render_stabilized:false` plus a note on timeout. Port of upstream #148
+  (commit `a3e5160`).
+- **`data_get_ohlcv` / `quote_get` symbol parameter** and **configurable MCP
+  config path** — ports of upstream #154 and #129 (commit `318a101`).
+- **`pine_open` slot rebind via `pineEditorTestApi`** — port of upstream #158
+  (commit `a3e5160`). **Broken on TV Desktop 3.2.0 — see Known issues.**
+
+### Changed
+
+- **Boolean inputs reject garbage and read string spellings literally.**
+  Replaced 16 `z.coerce.boolean()` sites — which coerced any non-empty
+  string, including `"false"`/`"0"`/`"no"`, to `true` — with a shared
+  `boolish` helper. A real hazard on default-true flags: `tv_launch
+  kill_existing:"false"` killed the running session, `alert_create_indicator
+  active:"false"` armed a staged alert (commit `e2f4601`).
+- **Shared loading-spinner probe** across `waitForChartRender` and
+  `waitForChartReady`, so the loader selectors can't drift between waiters
+  (commit `7d62d78`).
+
+### Fixed
+
+- **Full-codebase correctness + security sweep** (commit `07d8117`):
+  - Connection lifecycle: serialize `connect()` (no leaked CDP sockets on
+    concurrent calls); swallow the orphaned liveness-probe rejection; signal
+    handlers no longer `process.exit()` out from under async CDP teardown.
+  - Pine data-loss guards: `saveAs` explicit `overwrite` (refuse a name
+    collision, reopen by id); `newScript` reports `slot_rebound:false`;
+    `getSource`/`saveAs` source reads go through `evaluateChecked`
+    (truncation guard).
+  - Chart: `setSymbol` `discard_unsaved` opt-in (refuse rather than silently
+    discard unsaved Pine via the dialog); `setTimeframe` reads back the
+    actual resolution and handles a blocking dialog without discarding
+    unsaved work.
+  - Data: multi-timeframe always restores the original timeframe;
+    cross-symbol `getOhlcv`/`getQuote` refuse rather than strand the chart;
+    `change_pct` divide-by-zero guard; ms-epoch handling.
+  - Alerts: `alert_create_indicator` validates `web_hook` (rejects
+    loopback / link-local / private, incl. IPv4-mapped IPv6) — SSRF;
+    `alert_create` rejects an empty price instead of coercing it to 0.
+  - Launch / capture / screener: `launch` returns `success:false` when CDP
+    never comes up; skip a zero-dimension capture clip; guard a non-array
+    scanner response.
+- **`alert_create_indicator` tools/list schema generation** — switch to the
+  two-arg `z.record(z.string(), …)` form so Zod v4 stops throwing during
+  `tools/list`, which had aborted the entire tool list in strict MCP clients
+  (commit `5742503`).
+- **`saveAs` script-id extraction on TV Desktop 3.2.0** — TV 3.2.0 moved the
+  pine-facade `save/new` id from a top-level `scriptIdPart` to
+  `result.metaInfo.id` (`Script$USER;<hash>@tv-scripting-101`). Without
+  unwrapping it `saveAs` returned a null id and degraded reopen-by-id to the
+  unsafe reopen-by-name. Unwrapped with a back-compatible fallback (commit
+  `7de97fa`).
+- **`capture_screenshot` honest timeout disclosure** and **`openScript`
+  payload guards** (commit `e2f4601`).
+
+### Tests
+
+- **`tests/new_features.e2e.test.js`** — first live e2e validation of the
+  post-1.1.0 behaviors against TV Desktop 3.2.0.7916. 13 pass; the
+  `pine_open` slot-rebind test is skipped with a documented root cause
+  pending the rework (commit `7de97fa`).
+
+### Known issues
+
+- **`pine_open` (#158) is broken on TV Desktop 3.2.0.** `pineEditorTestApi`
+  instantiates an editor instance desynced from the live Monaco, so
+  `openScript` loads no source into the visible editor while still reporting
+  `slot_rebound:true`. The root cause is documented and a
+  `pine_open`/`pine_save` rework is planned. Earlier TV builds are
+  unaffected.
+
 ## [1.1.0] - 2026-05-18
 
 Three weeks of fork-audit ports, TV Desktop 3.1.0.7818 hardening, and a

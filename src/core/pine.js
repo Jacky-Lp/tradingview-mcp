@@ -1418,7 +1418,18 @@ export async function saveAs({ name, overwrite = false, _deps }) {
   }
 
   const d = result?.data || {};
-  const scriptId = d.scriptIdPart || d.id || d.script_id || null;
+  // TV 3.2.0 changed the save/new response shape: identity moved from a
+  // top-level scriptIdPart to result.metaInfo.id, formatted as
+  // "Script$USER;<hash>@tv-scripting-101". Without unwrapping it, scriptId
+  // falls back to null and the reopen below degrades to the unsafe
+  // reopen-by-name path (can rebind a different same-named script) —
+  // re-opening the data-loss window 07d8117 closed. Extract the bare
+  // "USER;<hash>" form; keep the legacy top-level keys for older builds.
+  let scriptId = d.scriptIdPart || d.id || d.script_id || null;
+  if (!scriptId && d.result?.metaInfo?.id) {
+    const m = String(d.result.metaInfo.id).match(/USER;[0-9a-fA-F]+/);
+    if (m) scriptId = m[0];
+  }
 
   // After save/new, the editor still points at the previous script; reopen
   // the new copy so subsequent pine_save writes back to the right identity.

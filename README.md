@@ -1,15 +1,17 @@
 # TradingView MCP Bridge
 
-[![CI](https://github.com/iliaal/tradingview-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/iliaal/tradingview-mcp/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/github/v/release/iliaal/tradingview-mcp?v=1.0.0)](https://github.com/iliaal/tradingview-mcp/releases)
+[![CI](https://github.com/Jacky-Lp/tradingview-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Jacky-Lp/tradingview-mcp/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/github/v/release/Jacky-Lp/tradingview-mcp)](https://github.com/Jacky-Lp/tradingview-mcp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js 18+](https://img.shields.io/badge/node-18%2B-green?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Platform: macOS · Windows · Linux](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-lightgrey)](#prerequisites)
-[![Follow @iliaa](https://img.shields.io/badge/Follow-@iliaa-000000?style=flat&logo=x&logoColor=white)](https://x.com/intent/follow?screen_name=iliaa)
+[![Fork of iliaal/tradingview-mcp](https://img.shields.io/badge/fork%20of-iliaal%2Ftradingview--mcp-blue?logo=github)](https://github.com/iliaal/tradingview-mcp)
 
 ![tradingview-mcp: bridge Claude Code to TradingView Desktop](images/tradingview-mcp-hero.jpg)
 
 Personal AI assistant for your TradingView Desktop charts. Connects Claude Code to your locally running TradingView app via Chrome DevTools Protocol for AI-assisted chart analysis, Pine Script development, and workflow automation.
+
+> **Fork notice.** This is a personal fork of [iliaal/tradingview-mcp](https://github.com/iliaal/tradingview-mcp) — full credit to the original author. It adds a Smart Money Concepts (SMC) session-brief layer (see [below](#-smc-session-brief-layer-this-fork)). Upstream changes are merged in periodically.
 
 > [!WARNING]
 > **This tool is not affiliated with, endorsed by, or associated with TradingView Inc.** It interacts with your locally running TradingView Desktop application via Chrome DevTools Protocol. Review the [Disclaimer](#disclaimer) before use.
@@ -81,7 +83,7 @@ Gives your AI assistant eyes and hands on your own chart:
 
 Paste this into Claude Code and it will handle the rest:
 
-> Install the TradingView MCP server. Clone https://github.com/iliaal/tradingview-mcp.git, run npm install, register it with `claude mcp add tradingview --scope user -- node <repo>/src/server.js`, and launch TradingView with the debug port. Then verify the connection with tv_health_check.
+> Install the TradingView MCP server. Clone https://github.com/Jacky-Lp/tradingview-mcp.git, run npm install, register it with `claude mcp add tradingview --scope user -- node <repo>/src/server.js`, and launch TradingView with the debug port. Then verify the connection with tv_health_check.
 
 Or follow the manual steps below.
 
@@ -90,7 +92,7 @@ Or follow the manual steps below.
 ### 1. Install
 
 ```bash
-git clone https://github.com/iliaal/tradingview-mcp.git
+git clone https://github.com/Jacky-Lp/tradingview-mcp.git
 cd tradingview-mcp
 npm install
 ```

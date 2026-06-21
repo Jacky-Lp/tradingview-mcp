@@ -1,141 +1,282 @@
-# TradingView MCP — Claude Instructions
+# CLAUDE.md — SMC Trading Decision Tree
+> Claude Code reads this file automatically when working in this project.
+> This is the complete decision framework for Jacky's prop firm challenge.
+> Method: Smart Money Concepts (SMC). Instruments: BTC/USDT, ETH/USDT.
 
-96 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+---
 
-## Decision Tree — Which Tool When
+## MORNING BRIEF — run this every session
 
-### "What's on my chart right now?"
-1. `chart_get_state` → symbol, timeframe, chart type, list of all indicators with entity IDs
-2. `data_get_study_values` → current numeric values from all visible indicators (RSI, MACD, BBands, EMAs, etc.)
-3. `quote_get` → real-time price, OHLC, volume for current symbol
+When asked to run `morning_brief` or "give me my session bias":
 
-### "What levels/lines/labels are showing?"
-Custom Pine indicators draw with `line.new()`, `label.new()`, `table.new()`, `box.new()`. These are invisible to normal data tools. Use:
+1. Read `rules.json` to load watchlist, bias criteria, and no-trade conditions
+2. For each symbol in the watchlist, work **top-down (Daily → H4 → H1)**:
+   - **HTF CONTEXT FIRST** — use `data_get_multi_timeframe ["D","240","60"]` to read EMA200 + RSI + price summary across Daily, H4 and H1 in one call. Classify each higher timeframe (see `HIGHER-TIMEFRAME CONTEXT` section): Daily trend (bull / bear / range) and H4 trend (bull / bear / range). This is the dashboard the H1 zone sits inside.
+   - Switch chart to that symbol on **H1 timeframe** for the detailed read
+   - Read EMA200 value and compare to current price
+   - Read last 3 swing highs and lows to determine H1 market structure
+   - **LIQUIDITY MAP** — from H1 (and H4) OHLCV, identify the obvious liquidity pools: buy-side (BSL) = swing highs / equal highs above price, sell-side (SSL) = swing lows / equal lows below price. Note the nearest pool above and below, and which side price is likely drawn toward (see `LIQUIDITY MAP` section).
+   - Identify the nearest unmitigated OB and/or FVG
+   - Check RSI value on H1
+   - Check if price is in premium, discount, or middle of range
+   - **Rate HTF alignment** of the H1 zone: aligned with Daily+H4 (high conviction) / counter-HTF or inside an H4 range (caution — lower conviction)
+   - List any active no-trade conditions
+3. (HTF data already pulled in step 2 via `data_get_multi_timeframe ["D","240","60"]`)
+4. Use `data_get_pine_boxes` to read any OB/FVG zones already drawn by indicators
+5. Use `data_get_pine_lines` to read S/R levels
+6. **Draw the zones on the chart** — for each symbol, draw the unmitigated OB and FVG aligned with the H1 bias (the ones that matter for entry), following the `DRAWING ZONES ON THE CHART` convention below. Do NOT use `draw_clear` — it wipes the user's own manual drawings too. To avoid duplicates, check `draw_list` first and skip a zone that is already drawn at the same coordinates.
+7. Output the brief **in French**, following the French template in the `OUTPUT FORMAT FOR BRIEF` section below.
+8. Save the brief (also **in French**) to `Debrief/md/YYYY-MM-DD_HH-MM.md` (create the `Debrief/md/` folder if it does not exist). Use the date AND time from the morning brief — the filename is timestamped (`_HH-MM`) so multiple runs in one day each get their own file. The title heading inside the file must match: `# 📋 Brief de session — YYYY-MM-DD · HH:MM`.
+9. **Generate the styled HTML** version: run `node scripts/brief-to-html.js Debrief/md/YYYY-MM-DD_HH-MM.md`. This writes a dark-theme HTML to the sibling folder `Debrief/html/YYYY-MM-DD_HH-MM.html` (red/green badges, styled tables) from the Markdown — do NOT hand-write the HTML. The Markdown is the single source of truth; just re-run the script after any edit to the `.md`. (Layout: `Debrief/md/` holds the `.md` sources, `Debrief/html/` holds the generated `.html`.)
 
-1. `data_get_pine_lines` → horizontal price levels drawn by indicators (deduplicated, sorted high→low)
-2. `data_get_pine_labels` → text annotations with prices (e.g., "PDH 24550", "Bias Long ✓")
-3. `data_get_pine_tables` → table data formatted as rows (e.g., session stats, analytics dashboards)
-4. `data_get_pine_boxes` → price zones / ranges as {high, low} pairs
+---
 
-Use `study_filter` parameter to target a specific indicator by name substring (e.g., `study_filter: "Profiler"`).
-
-### "Give me price data"
-- `data_get_ohlcv` with `summary: true` → compact stats (high, low, range, change%, avg volume, last 5 bars)
-- `data_get_ohlcv` without summary → all bars (use `count` to limit, default 100)
-- `quote_get` → single latest price snapshot
-- `data_detect_candlestick_patterns` → native scan over recent OHLC for 17 classic patterns (doji, hammer, engulfing, morning/evening star, etc.) — no chart pollution
-
-### "Top-down / multi-timeframe view"
-- `data_get_multi_timeframe` with `timeframes: ["W","D","240","60","15"]` → per-TF indicator values + price summary in one call. Saves and restores the original timeframe. Same indicators must already be loaded on the chart.
-
-### "Analyze my chart" (full report workflow)
-1. `quote_get` → current price
-2. `data_get_study_values` → all indicator readings
-3. `data_get_pine_lines` → key price levels from custom indicators
-4. `data_get_pine_labels` → labeled levels with context (e.g., "Settlement", "ASN O/U")
-5. `data_get_pine_tables` → session stats, analytics tables
-6. `data_get_ohlcv` with `summary: true` → price action summary
-7. `capture_screenshot` → visual confirmation
-
-### "Change the chart"
-- `chart_set_symbol` → switch ticker (e.g., "AAPL", "ES1!", "NYMEX:CL1!")
-- `chart_set_timeframe` → switch resolution (e.g., "1", "5", "15", "60", "D", "W")
-- `chart_set_type` → switch chart style (Candles, HeikinAshi, Line, Area, Renko, etc.)
-- `chart_manage_indicator` → add or remove studies (use full name: "Relative Strength Index", not "RSI")
-- `chart_scroll_to_date` → jump to a date (ISO format: "2025-01-15")
-- `chart_set_visible_range` → zoom to exact date range (unix timestamps)
-
-### "Work on Pine Script"
-1. `pine_set_source` → inject code into editor
-2. `pine_smart_compile` → compile with auto-detection + error check
-3. `pine_get_errors` → read compilation errors
-4. `pine_get_console` → read log.info() output
-5. `pine_get_source` → read current code back (WARNING: can be very large for complex scripts)
-6. `pine_save` → save to TradingView cloud
-7. `pine_new` → create blank indicator/strategy/library
-8. `pine_open` → load a saved script by name
-
-### "Practice trading with replay"
-1. `replay_start` with `date: "2025-03-01"` → enter replay mode
-2. `replay_step` → advance one bar
-3. `replay_autoplay` → auto-advance (set speed with `speed` param in ms)
-4. `replay_trade` with `action: "buy"/"sell"/"close"` → execute trades
-5. `replay_status` → check position, P&L, current date
-6. `replay_stop` → return to realtime
-
-### "Screen multiple symbols"
-- `batch_run` with `symbols: ["ES1!", "NQ1!", "YM1!"]` and `action: "screenshot"` or `"get_ohlcv"`
-
-### "Find today's market movers"
-- `hotlist_get` with `slug: "volume_gainers"` (or `percent_change_gainers`, `percent_change_losers`, `gap_gainers`, `gap_losers`, `percent_range_gainers`, `percent_range_losers`, `percent_gap_gainers`, `percent_gap_losers`) → calls TradingView's public scanner preset endpoint, returns up to 20 US symbols ranked by the hotlist field. Pairs naturally with `watchlist_add_bulk`.
-
-### "Draw on the chart"
-- `draw_shape` → horizontal_line, trend_line, rectangle, text (pass point + optional point2)
-- `draw_list` → see what's drawn
-- `draw_remove_one` → remove by ID
-- `draw_clear` → remove all
-
-### "Manage alerts"
-All four tools post to `pricealerts.tradingview.com` REST. No DOM scraping, no UI brittleness, returns real `alert_id`.
-- `alert_create` → price alert on the active chart symbol. `condition` accepts "crossing"/"greater_than"/"less_than" (and aliases like "above"/"cross_up"); normalized to TV's `cross`/`cross_up`/`cross_down`. Returns `alert_id`.
-- `alert_create_indicator` → fires on a Pine `alertcondition()` signal (BUY/SELL → webhook). Needs `pine_id`, `alert_cond_id` (e.g. `plot_12`), `inputs`, `offsets_by_plot`. Discover the schema by creating one alert manually in the UI, then reading it back via `alert_list`.
-- `alert_list` → view active alerts (with `alert_id`s).
-- `alert_delete` → pass `alert_id` for one, `alert_ids: [...]` for bulk in a single request, or `delete_all: true`.
-
-### "Navigate the UI"
-- `ui_open_panel` → open/close pine-editor, strategy-tester, watchlist, alerts, trading
-- `ui_click` → click buttons by aria-label, text, or data-name
-- `layout_switch` → load a saved layout by name
-- `ui_fullscreen` → toggle fullscreen
-- `capture_screenshot` → take a screenshot (regions: "full", "chart", "strategy_tester")
-
-### "TradingView isn't running"
-- `tv_launch` → auto-detect and launch TradingView with CDP on Mac/Win/Linux
-- `tv_health_check` → verify connection is working
-
-## Context Management Rules
-
-These tools can return large payloads. Follow these rules to avoid context bloat:
-
-1. **Always use `summary: true` on `data_get_ohlcv`** unless you specifically need individual bars
-2. **Always use `study_filter`** on pine tools when you know which indicator you want — don't scan all studies unnecessarily
-3. **Never use `verbose: true`** on pine tools unless the user specifically asks for raw drawing data with IDs/colors
-4. **Avoid calling `pine_get_source`** on complex scripts — it can return 200KB+. Only read if you need to edit the code.
-5. **Avoid calling `data_get_indicator`** on protected/encrypted indicators — their inputs are encoded blobs. Use `data_get_study_values` instead for current values.
-6. **Use `capture_screenshot`** for visual context instead of pulling large datasets — a screenshot is ~300KB but gives you the full visual picture
-7. **Call `chart_get_state` once** at the start to get entity IDs, then reference them — don't re-call repeatedly
-8. **Cap your OHLCV requests** — `count: 20` for quick analysis, `count: 100` for deeper work, `count: 500` only when specifically needed
-
-### Output Size Estimates (compact mode)
-| Tool | Typical Output |
-|------|---------------|
-| `quote_get` | ~200 bytes |
-| `data_get_study_values` | ~500 bytes (all indicators) |
-| `data_get_pine_lines` | ~1-3 KB per study (deduplicated levels) |
-| `data_get_pine_labels` | ~2-5 KB per study (capped at 50) |
-| `data_get_pine_tables` | ~1-4 KB per study (formatted rows) |
-| `data_get_pine_boxes` | ~1-2 KB per study (deduplicated zones) |
-| `data_get_ohlcv` (summary) | ~500 bytes |
-| `data_get_ohlcv` (100 bars) | ~8 KB |
-| `data_detect_candlestick_patterns` (100 bars) | ~1-3 KB (only matched bars) |
-| `data_get_multi_timeframe` (5 TFs × 5 indicators) | ~1-2 KB |
-| `hotlist_get` (20 symbols) | ~1-2 KB |
-| `capture_screenshot` | ~300 bytes (returns file path, not image data) |
-
-## Tool Conventions
-
-- All tools return `{ success: true/false, ... }`
-- Entity IDs (from `chart_get_state`) are session-specific — don't cache across sessions
-- Pine indicators must be **visible** on chart for pine graphics tools to read their data
-- `chart_manage_indicator` requires **full indicator names**: "Relative Strength Index" not "RSI", "Moving Average Exponential" not "EMA", "Bollinger Bands" not "BB"
-- Screenshots save to `screenshots/` directory with timestamps
-- OHLCV capped at 500 bars, trades at 20 per request
-- Pine labels capped at 50 per study by default (pass `max_labels` to override)
-
-## Architecture
+## BIAS DETERMINATION (H1 — always first)
 
 ```
-Claude Code ←→ MCP Server (stdio) ←→ CDP (localhost:9222) ←→ TradingView Desktop (Electron)
+Price > EMA200 H1 + HH/HL structure + last BOS bullish  →  BULLISH BIAS
+Price < EMA200 H1 + LH/LL structure + last BOS bearish  →  BEARISH BIAS
+Price ≈ EMA200 H1 OR ranging structure                  →  NEUTRAL → NO TRADE
 ```
 
-Pine graphics path: `study._graphics._primitivesCollection.dwglines.get('lines').get(false)._primitivesDataById`
+**Never trade against H1 bias.** If bias is neutral, output is: "No valid session setup. Wait."
+
+**HTF overlay (conviction filter, not an override):** the H1 bias still decides direction, but read it inside the Daily/H4 dashboard:
+- H1 bias **aligned** with Daily + H4 trend → high conviction, full setup.
+- H1 bias **inside an H4 range** (no HTF trend) → tradeable but lower conviction; expect chop and HTF liquidity grabs.
+- H1 bias **counter to Daily trend** → caution. Likely just a pullback into HTF liquidity; tighten criteria, smaller target, or skip.
+
+---
+
+## HIGHER-TIMEFRAME CONTEXT (D + H4)
+
+> Read with `data_get_multi_timeframe ["D","240","60"]` (Daily, H4, H1 — requires EMA200 + RSI loaded on the chart). The H1 zone means very different things depending on this dashboard: an H1 OB inside a bearish H4 range ≠ an H1 OB inside a bullish Daily trend.
+
+Classify each timeframe the same way as H1:
+```
+Price > EMA200 + HH/HL              →  TREND UP
+Price < EMA200 + LH/LL              →  TREND DOWN
+Price ≈ EMA200 OR no clear HH/HL    →  RANGE (note the range high / low)
+```
+Then state the **top-down read** in one line, e.g.:
+`Daily: trend up | H4: range (3,050–3,180) | H1: bearish pullback → H1 short = counter-Daily, treat as pullback into discount, lower conviction.`
+
+---
+
+## LIQUIDITY MAP (where are the pools?)
+
+> Price is drawn toward resting liquidity. Mapping it tells you where the next sweep (Step 3) is likely to hit and where targets sit. Read from H1 + H4 OHLCV (`data_get_ohlcv --count 150`).
+
+Identify and label:
+- **BSL (buy-side liquidity)** — resting above price: obvious swing highs, and especially **equal highs** (two+ highs at ~the same level). Stops of shorts + breakout buy orders sit here.
+- **SSL (sell-side liquidity)** — resting below price: obvious swing lows, and **equal lows**. Stops of longs + breakout sell orders sit here.
+- **Nearest pool above** and **nearest pool below** the current price (with price levels).
+- **Likely draw**: which side price is leaning toward (e.g. equal highs untouched above = magnet for a sweep before a real move down).
+
+How this feeds the setup:
+- For a **long**: expect a sweep of SSL (below a swing low / equal lows) into the zone, THEN CHoCH up. The swept low = where stop goes.
+- For a **short**: expect a sweep of BSL (above a swing high / equal highs) into the zone, THEN CHoCH down.
+- **Targets** = the opposite pool (next liquidity), used for the R/R check.
+
+---
+
+## TRADE SETUP CHECKLIST (run in order — stop at first failure)
+
+```
+STEP 1 — BIAS
+  ✅ H1 bias is clearly Bullish or Bearish (not neutral)?
+  ❌ NEUTRAL → STOP. No trade today on this symbol.
+
+STEP 2 — ZONE
+  ✅ Price is at or approaching a valid confluence zone?
+     → Tier 1: Unmitigated H1 OB, H1 FVG, or EMA200 H1
+     → Tier 2: M15 OB within Tier 1, horizontal S/R, 50% retracement
+  ✅ DRAW the zone you are watching as a rectangle (see DRAWING ZONES convention).
+  ❌ Price is in the middle of a range → STOP. Wait for edge.
+
+STEP 3 — LIQUIDITY SWEEP
+  ✅ Price has swept a pool from the LIQUIDITY MAP at the zone?
+     → For longs: wick below the zone taking out SSL (recent swing lows / equal lows)
+     → For shorts: wick above the zone taking out BSL (recent swing highs / equal highs)
+  ❌ No sweep → STOP. The sweep must come first. Entering without it = chasing.
+
+STEP 4 — CHoCH CONFIRMATION (entry trigger)
+  ✅ A CLOSED candle on M5 or M15 has broken the last LH (for longs) or HL (for shorts)?
+  ❌ Only a wick touched the level → STOP. Wait for candle close.
+  ❌ Still printing → STOP. Wait. Never enter on a live candle.
+
+STEP 5 — R/R CHECK
+  ✅ Stop loss placed beyond the sweep wick. Target = opposite pool on the LIQUIDITY MAP (next BSL for longs, next SSL for shorts).
+  ✅ R/R ≥ 1:2 ?
+  ❌ R/R < 1:2 → SKIP this trade. Move on.
+
+STEP 6 — NO-TRADE FLAGS
+  ✅ None of the no-trade conditions in rules.json are active?
+  ❌ Any flag active (news, RSI extreme, counter-trend) → SKIP or wait.
+
+→ ALL 6 STEPS PASS = Valid setup. Entry on next candle open after CHoCH close.
+  → When valid, draw the trade with `draw_position` (direction, entry_price, stop_loss, take_profit)
+    so entry / SL / TP are visible on the chart with the R/R.
+```
+
+---
+
+## DRAWING ZONES ON THE CHART (OB / FVG / ENTRY)
+
+> Goal: every OB and FVG that matters for the entry must be **visible on the chart**, not just described in text. Use the real `draw_*` MCP tools — never invent a tool.
+
+**Tool:** `draw_shape` with `shape: "rectangle"`. A rectangle needs two opposite corners:
+- `point`  = `{ time: <left_edge_unix>, price: <zone_top> }`
+- `point2` = `{ time: <right_edge_unix>, price: <zone_bottom> }`
+- `left_edge_unix`  = unix time of the candle where the zone was created (its open time).
+- `right_edge_unix` = the latest visible bar time (so the box extends to "now"). Get bar times from `data_get_ohlcv`.
+- `text` = short label, e.g. `"H1 Bull OB"`, `"H1 Bear FVG"`.
+- `overrides` = JSON **string** of style. Keys: `color` (border), `backgroundColor`, `fillBackground`, `transparency` (0–100, higher = more see-through), `linewidth`, `showLabel`, `textcolor`.
+
+**Color convention (keep it consistent every run):**
+
+| Zone | color / backgroundColor | transparency |
+|------|-------------------------|--------------|
+| Bullish OB  | `#26a69a` (green) | 80 |
+| Bearish OB  | `#ef5350` (red)   | 80 |
+| Bullish FVG | `#2962ff` (blue)  | 85 |
+| Bearish FVG | `#ff9800` (orange)| 85 |
+
+Example overrides string for a bullish OB:
+`'{"color":"#26a69a","backgroundColor":"#26a69a","fillBackground":true,"transparency":80,"linewidth":1,"showLabel":true,"text":"H1 Bull OB","textcolor":"#26a69a"}'`
+
+**Rules for drawing:**
+- Only draw **unmitigated** zones aligned with the H1 bias — the ones price could actually trade from. Don't clutter the chart with every gap.
+- **Never use `draw_clear`** — it deletes the user's own manual drawings. To avoid piling up duplicates, call `draw_list` first and skip any zone already drawn at the same coordinates. If you must remove a box you drew earlier, remove it individually with `draw_remove_one` using its `entity_id`.
+- Prefer zones already reported by `data_get_pine_boxes` (indicator-drawn) — match their coordinates rather than re-deriving when possible.
+- When a full setup is valid (all 6 steps pass), add the trade with `draw_position`.
+
+---
+
+## KEY RULES — never override these
+
+- **No CHoCH = No trade.** Price touching a zone is NOT a signal.
+- **No entry on a wick.** Candle body must close beyond the CHoCH level.
+- **No counter-trend trades.** H1 bias is the filter. Always.
+- **No trading during major news.** Check calendar before every session.
+- **BTC leads ETH.** If BTC is at a major level, factor that into any ETH setup.
+- **"No trade" is a valid decision.** Protecting capital > forcing setups.
+- **FOMO is the enemy.** If the move has started without a confirmed CHoCH, it's gone. Wait for the next setup.
+
+---
+
+## TOOL SEQUENCE FOR ANALYSIS
+
+```
+tv_health_check                    → verify connection
+tv symbol VANTAGE:BTCUSD           → switch symbol
+tv timeframe 1H                    → set H1
+data_get_multi_timeframe [D,240,60] → top-down HTF context (Daily + H4 + H1 dashboard)
+data_get_study_values EMA(200)     → read EMA200
+data_get_ohlcv --count 150         → read price action + map liquidity (swing/equal highs & lows)
+data_get_pine_boxes                → read OB/FVG zones from indicators
+data_get_pine_lines                → read S/R levels
+data_detect_candlestick_patterns   → candle context (supplemental only)
+draw_list                          → check existing drawings (avoid duplicates; never draw_clear)
+draw_shape rectangle               → draw OB / FVG zones (see DRAWING ZONES convention)
+draw_position                      → draw entry / SL / TP when a setup is valid
+capture_screenshot                 → visual confirmation
+```
+
+---
+
+## OUTPUT FORMAT FOR BRIEF
+
+> **LANGUE : le brief doit être rédigé EN FRANÇAIS** — aussi bien la sortie affichée à l'écran que le fichier sauvegardé dans `Debrief/`. Les sigles SMC restent tels quels (BOS, CHoCH, OB, FVG, EMA200, RSI, R/R, HH/HL, LH/LL).
+>
+> **FORMAT : vrai Markdown** (titres `#`, tableaux, gras, `>` citations, ``code`` pour les prix). Le fichier `Debrief/*.md` doit s'afficher proprement dans l'aperçu Markdown de VS Code — PAS un bloc de texte brut entre ``` ```. Suis exactement le gabarit ci-dessous (rends une section par symbole de la watchlist).
+
+**Légende des badges** (à réutiliser tels quels) :
+`🟢` haussier · `🔴` baissier · `⚪` neutre · `🔺` au-dessus EMA · `🔻` sous EMA · `🔼` BSL/liquidité au-dessus · `🔽` SSL/liquidité en-dessous · `⏳` aucun setup (attendre) · `✅` setup valide · `🚩` drapeau no-trade
+
+**`[SESSION]`** = session de marché active à `[HEURE]` (heure locale Paris). Valeurs (mêmes bornes que `scripts/brief-to-html.js`) :
+`🌏 Asie / Tokyo` (01:00–08:00) · `🇫🇷 Paris Open` (08:00–09:00) · `🇬🇧 London` (09:00–14:30) · `🌍 London/NY overlap` (14:30–17:30) · `🇺🇸 New York` (17:30–22:00) · `🌙 Clôture US / nuit` (22:00–01:00).
+Dans le HTML, le script affiche automatiquement cette session sous forme de vignette colorée à droite du titre (recalculée depuis l'heure) — tu peux donc l'écrire dans le titre MD, elle ne sera pas dupliquée.
+
+```markdown
+# 📋 Brief de session — [DATE] · [HEURE] · [SESSION]
+
+> **Global :** [🟢/🔴/⚪] [Aligné haussier / Aligné baissier / Mixte / Aucun setup] · **Top opportunité :** [symbole + direction, ou AUCUNE]
+> _Pas de CHoCH = Pas de trade. Protéger le compte._
+
+---
+
+## [🟢/🔴/⚪] BTCUSD — Biais : **[Haussier/Baissier/Neutre]**
+
+| Élément | Lecture |
+|---|---|
+| **Contexte HTF** | Daily [↗/↘/range] · H4 [↗/↘/range (`high`–`low`)] → [aligné HTF / contre-Daily / dans range H4] |
+| **EMA200 H1** | [🔺/🔻] prix [au-dessus/sous] l'EMA `[valeur]` (prix ≈ `[valeur]`) |
+| **Structure** | [HH/HL · LH/LL · Range] — [BOS note] |
+| **Liquidité** | 🔼 BSL `[niveau]` [equal highs ?] · 🔽 SSL `[niveau]` [equal lows ?] · aimant : [haut/bas] |
+| **Zone clé** | `[prix–prix]` — [OB/FVG/S&R/EMA] |
+| **Type de zone** | [Premium / Discount / Milieu] |
+| **RSI H1** | `[valeur]` |
+
+**Setup :** [⏳ AUCUN — _WAIT [LONG/SHORT]_ ... / ✅ description] 
+**No-trade :** [🚩 liste ou AUCUN]
+
+---
+
+## [🟢/🔴/⚪] ETHUSD — Biais : **[Haussier/Baissier/Neutre]**
+
+| Élément | Lecture |
+|---|---|
+| **Contexte HTF** | Daily [↗/↘/range] · H4 [↗/↘/range (`high`–`low`)] → [alignement] |
+| **EMA200 H1** | [🔺/🔻] prix [au-dessus/sous] l'EMA `[valeur]` (prix ≈ `[valeur]`) |
+| **Structure** | [HH/HL · LH/LL · Range] — [BOS note] |
+| **Liquidité** | 🔼 BSL `[niveau]` [equal highs ?] · 🔽 SSL `[niveau]` [equal lows ?] · aimant : [haut/bas] |
+| **Zone clé** | `[prix–prix]` — [OB/FVG/S&R/EMA] |
+| **Type de zone** | [Premium / Discount / Milieu] |
+| **RSI H1** | `[valeur]` |
+| **Corrélation BTC** | [alignée / divergente — note] |
+
+**Setup :** [⏳ AUCUN — _WAIT [LONG/SHORT]_ ... / ✅ description] 
+**No-trade :** [🚩 liste ou AUCUN]
+
+---
+
+## 🧭 Résumé
+
+- **Global :** [🟢/🔴/⚪] [...]
+- **Meilleure opportunité :** [symbole + direction + « attendre le CHoCH après sweep en `[zone]` » / AUCUNE]
+- **Rappel :** Pas de CHoCH = Pas de trade. Attendre le setup, pas le mouvement.
+```
+
+---
+
+## DEFINITIONS QUICK REFERENCE
+
+| Term | Definition |
+|------|-----------|
+| **BOS** | Break of Structure — confirms trend continuation |
+| **CHoCH** | Change of Character — entry trigger (closed candle only) |
+| **OB** | Order Block — last opposite candle before impulse (must be unmitigated) |
+| **FVG** | Fair Value Gap — 3-candle imbalance / unfilled inefficiency |
+| **Liquidity sweep** | Price engineered to take stops before reversing — expected, not feared |
+| **Premium** | Price above 50% of the last impulse — look for shorts |
+| **Discount** | Price below 50% of the last impulse — look for longs |
+| **Unmitigated** | Zone price has NOT returned to since it was created |
+
+## APRÈS LE BRIEF — dessiner sur le chart
+
+Pour chaque symbole analysé, dessiner automatiquement :
+
+1. **OB identifié** → rectangle coloré
+   - Bearish OB : rectangle rouge semi-transparent
+   - Bullish OB : rectangle vert semi-transparent
+
+2. **FVG identifié** → rectangle bleu semi-transparent entre les deux prix
+
+3. **Zone d'entrée** → ligne horizontale pointillée orange au niveau Fib (0.5 / 0.618 / 0.786)
+
+4. **EMA200 H1** → ligne horizontale blanche avec label "EMA200 H1"
+
+5. **Label setup** → texte sur le chart : "WAIT SHORT — CHoCH M5/M15" ou "NO SETUP"
+
+Utiliser : drawing_create_rectangle, drawing_create_horizontal_line, drawing_create_label

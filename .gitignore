@@ -6,3 +6,9 @@ temp_*
 discovery-log.json
 .claude/
 .plan/
+
+# Config de trading perso — versionner rules.example.json à la place
+rules.json
+
+# Notes de méthode perso
+Evo/

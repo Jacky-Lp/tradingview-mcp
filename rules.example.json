@@ -1,0 +1,64 @@
+{
+  "_comment": "TEMPLATE — copier en rules.json puis remplir avec VOTRE méthode. rules.json est gitignoré (perso).",
+
+  "version": "1.0",
+  "trader": "YOUR_NAME",
+  "method": "Décrire votre méthode (ex: Smart Money Concepts — Prop Firm)",
+
+  "watchlist": [
+    "EXCHANGE:SYMBOL1",
+    "EXCHANGE:SYMBOL2"
+  ],
+
+  "session_notes": "Contexte macro à noter avant le brief (news, FOMC...). Vide si rien.",
+
+  "timeframes": {
+    "htf_context": ["1D", "4H"],
+    "bias": "1H",
+    "confirmation": "15M",
+    "entry": "5M"
+  },
+
+  "trading_sessions": {
+    "preferred": ["Sessions à fort volume à privilégier"],
+    "avoid": ["Sessions/fenêtres à éviter"]
+  },
+
+  "bias_criteria": {
+    "primary_anchor": "Indicateur d'ancrage du biais (ex: EMA200 H1)",
+    "bullish": ["Vos critères de biais haussier"],
+    "bearish": ["Vos critères de biais baissier"],
+    "neutral": ["Vos critères de biais neutre = pas de trade"]
+  },
+
+  "confluence_zones": {
+    "tier1_highest_priority": ["Vos zones d'entrée prioritaires"],
+    "tier2": ["Vos zones d'entrée secondaires"],
+    "minimum_confluence": "Règle de confluence minimale requise"
+  },
+
+  "entry_rules": {
+    "mandatory_sequence": ["Étapes obligatoires avant toute entrée"],
+    "stop_loss": "Règle de placement du stop loss",
+    "take_profit": "Règle de placement du take profit",
+    "minimum_rr": 2.0
+  },
+
+  "position_management": {
+    "max_trades_simultanes": 1,
+    "note": "Règles de gestion de position"
+  },
+
+  "no_trade_conditions": [
+    "Lister ici vos conditions de no-trade (biais neutre, news, RSI extrême...)"
+  ],
+
+  "risk_rules": {
+    "max_risk_per_trade_pct": 1.0,
+    "max_daily_drawdown_pct": 4.0,
+    "max_total_drawdown_pct": 8.0,
+    "note": "Adapter aux paramètres réels de votre challenge / compte"
+  },
+
+  "language": "Langue du brief de sortie (ex: FR). Sigles techniques inchangés."
+}

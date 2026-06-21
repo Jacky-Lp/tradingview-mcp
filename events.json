@@ -1,0 +1,12 @@
+{
+  "_comment": "Calendrier éco pour le gating news du morning brief. Remplis 'events' avec les vrais événements à fort impact (CPI, FOMC, NFP, PPI...) depuis ton calendrier (ForexFactory, Investing...). datetime = UTC, format ISO 8601 avec 'Z'. impact = 'high' | 'medium' | 'low' (low ne bloque jamais). Les entrées 'example: true' datées dans le passé sont inertes — juste un gabarit. Lancé par scripts/news-gate.js.",
+
+  "high_impact_window_min": 30,
+  "medium_impact_window_min": 15,
+  "lookahead_hours": 12,
+
+  "events": [
+    { "datetime": "2026-06-20T12:30:00Z", "name": "Exemple — US CPI (m/m)", "impact": "high", "currency": "USD", "example": true },
+    { "datetime": "2026-06-20T18:00:00Z", "name": "Exemple — FOMC (décision de taux)", "impact": "high", "currency": "USD", "example": true }
+  ]
+}

@@ -9,7 +9,7 @@
 
 When asked to run `morning_brief` or "give me my session bias":
 
-1. Read `rules.json` to load watchlist, bias criteria, and no-trade conditions
+1. Read `rules.json` to load watchlist, bias criteria, and no-trade conditions. **Then run the news gate** — `node scripts/news-gate.js` — for the deterministic economic-calendar verdict (`🟢 CLEAR` / `🚩 NO-TRADE`) plus upcoming high-impact events (CPI, FOMC, NFP…). The verdict is **global**: if NO-TRADE, every symbol inherits a 🚩 news flag and the upcoming events go in the summary. The time-window math is done in code — don't eyeball it. Maintain the calendar in `events.json` (UTC dates).
 2. For each symbol in the watchlist, work **top-down (Daily → H4 → H1)**:
    - **HTF CONTEXT FIRST** — use `data_get_multi_timeframe ["D","240","60"]` to read EMA200 + RSI + price summary across Daily, H4 and H1 in one call. Classify each higher timeframe (see `HIGHER-TIMEFRAME CONTEXT` section): Daily trend (bull / bear / range) and H4 trend (bull / bear / range). This is the dashboard the H1 zone sits inside.
    - Switch chart to that symbol on **H1 timeframe** for the detailed read
@@ -111,8 +111,9 @@ STEP 5 — R/R CHECK
   ❌ R/R < 1:2 → SKIP this trade. Move on.
 
 STEP 6 — NO-TRADE FLAGS
-  ✅ None of the no-trade conditions in rules.json are active?
-  ❌ Any flag active (news, RSI extreme, counter-trend) → SKIP or wait.
+  ✅ News gate is 🟢 CLEAR (`node scripts/news-gate.js`)? No high-impact event in the ±window.
+  ✅ None of the other no-trade conditions in rules.json are active?
+  ❌ Any flag active (🚩 news gate NO-TRADE, RSI extreme, counter-trend) → SKIP or wait.
 
 → ALL 6 STEPS PASS = Valid setup. Entry on next candle open after CHoCH close.
   → When valid, draw the trade with `draw_position` (direction, entry_price, stop_loss, take_profit)
@@ -158,7 +159,7 @@ Example overrides string for a bullish OB:
 - **No CHoCH = No trade.** Price touching a zone is NOT a signal.
 - **No entry on a wick.** Candle body must close beyond the CHoCH level.
 - **No counter-trend trades.** H1 bias is the filter. Always.
-- **No trading during major news.** Check calendar before every session.
+- **No trading during major news.** Run `node scripts/news-gate.js` before every session — a 🚩 NO-TRADE verdict means a high-impact event is in the ±window. Keep `events.json` up to date.
 - **BTC leads ETH.** If BTC is at a major level, factor that into any ETH setup.
 - **"No trade" is a valid decision.** Protecting capital > forcing setups.
 - **FOMO is the enemy.** If the move has started without a confirmed CHoCH, it's gone. Wait for the next setup.
@@ -169,6 +170,7 @@ Example overrides string for a bullish OB:
 
 ```
 tv_health_check                    → verify connection
+node scripts/news-gate.js          → economic-calendar gate (🟢 CLEAR / 🚩 NO-TRADE + upcoming)
 tv symbol VANTAGE:BTCUSD           → switch symbol
 tv timeframe 1H                    → set H1
 data_get_multi_timeframe [D,240,60] → top-down HTF context (Daily + H4 + H1 dashboard)

@@ -255,6 +255,8 @@ Claude then reads the higher-timeframe context, maps liquidity, finds the releva
 | `rules.json` | Your **personal** config (watchlist, bias criteria, no-trade conditions). Git-ignored — keep it local |
 | [`rules.example.json`](rules.example.json) | Template to copy: `cp rules.example.json rules.json`, then fill in your own method |
 | [`scripts/brief-to-html.js`](scripts/brief-to-html.js) | Renders a Markdown brief into a dark-theme HTML (red/green badges, styled tables) |
+| [`scripts/news-gate.js`](scripts/news-gate.js) | Deterministic economic-calendar gate: reads `events.json` and returns `🟢 CLEAR` / `🚩 NO-TRADE` (+ upcoming events) so the brief auto-flags CPI/FOMC windows |
+| [`events.json`](events.json) | User-maintained macro calendar (UTC dates, impact level) consumed by the news gate |
 | `Debrief/` | Generated briefs — `Debrief/md/` (Markdown sources) + `Debrief/html/` (styled output). Contents git-ignored (personal) |
 
 **Brief generation:**

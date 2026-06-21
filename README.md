@@ -235,6 +235,39 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 | "Draw a level at 24500" | `draw_shape` (horizontal_line) |
 | "Take a screenshot" | `capture_screenshot` |
 
+## 📋 SMC Session-Brief Layer (this fork)
+
+This fork adds a **Smart Money Concepts (SMC) decision layer** on top of the base MCP tools — a structured top-down workflow (Daily → H4 → H1) that produces a session bias brief for a personal watchlist.
+
+**How to use it** — just ask Claude:
+
+> "run morning_brief" · "give me my session bias" · "fais-moi le brief de session"
+
+Claude then reads the higher-timeframe context, maps liquidity, finds the relevant OB/FVG zones, draws them on the chart, and writes a styled brief.
+
+**What it adds:**
+
+| File / folder | Role |
+|---------------|------|
+| [`CLAUDE.md`](CLAUDE.md) | The full SMC decision tree: bias rules, trade-setup checklist, drawing conventions, brief output format |
+| `rules.json` | Your **personal** config (watchlist, bias criteria, no-trade conditions). Git-ignored — keep it local |
+| [`rules.example.json`](rules.example.json) | Template to copy: `cp rules.example.json rules.json`, then fill in your own method |
+| [`scripts/brief-to-html.js`](scripts/brief-to-html.js) | Renders a Markdown brief into a dark-theme HTML (red/green badges, styled tables) |
+| `Debrief/` | Generated briefs — `Debrief/md/` (Markdown sources) + `Debrief/html/` (styled output). Contents git-ignored (personal) |
+
+**Brief generation:**
+
+```bash
+# Claude writes Debrief/md/YYYY-MM-DD_HH-MM.md, then:
+node scripts/brief-to-html.js Debrief/md/YYYY-MM-DD_HH-MM.md
+# → Debrief/html/YYYY-MM-DD_HH-MM.html
+```
+
+> The brief output is written in **French** (SMC acronyms kept as-is: BOS, CHoCH, OB, FVG, EMA200, RSI). The Markdown is the single source of truth — re-run the script after any edit.
+
+> [!NOTE]
+> This is a personal analysis aid, **not** a trading bot or signal service. It helps structure a manual SMC read; every decision stays with you. See the [Disclaimer](#disclaimer).
+
 ## Tool Reference (108 MCP tools)
 
 ### Chart Reading
@@ -510,7 +543,3 @@ By using this software, you acknowledge and agree that:
 MIT. See [LICENSE](LICENSE) for details.
 
 The MIT license applies to the source code of this project only. It does not grant any rights to TradingView's software, data, trademarks, or intellectual property.
-
----
-
-[Follow @iliaa on X](https://x.com/iliaa) • [Blog](https://ilia.ws) • If this gave your AI agent eyes on your chart, ⭐ star it!

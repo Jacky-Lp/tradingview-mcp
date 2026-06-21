@@ -1,12 +1,16 @@
 {
-  "_comment": "Calendrier éco pour le gating news du morning brief. Remplis 'events' avec les vrais événements à fort impact (CPI, FOMC, NFP, PPI...) depuis ton calendrier (ForexFactory, Investing...). datetime = UTC, format ISO 8601 avec 'Z'. impact = 'high' | 'medium' | 'low' (low ne bloque jamais). Les entrées 'example: true' datées dans le passé sont inertes — juste un gabarit. Lancé par scripts/news-gate.js.",
+  "_comment": "Calendrier éco pour le gating news du morning brief. Remplis 'events' avec les vrais événements à fort impact (CPI, FOMC, NFP, PPI, PCE...) depuis ton calendrier (ForexFactory, Investing...). datetime = UTC, format ISO 8601 avec 'Z'. impact = 'high' | 'medium' | 'low' (low ne bloque jamais). Filtré pour BTC/ETH : on ne garde que le macro US (Fed, inflation, emploi). Lancé par scripts/news-gate.js.",
 
   "high_impact_window_min": 30,
   "medium_impact_window_min": 15,
   "lookahead_hours": 12,
 
   "events": [
-    { "datetime": "2026-06-20T12:30:00Z", "name": "Exemple — US CPI (m/m)", "impact": "high", "currency": "USD", "example": true },
-    { "datetime": "2026-06-20T18:00:00Z", "name": "Exemple — FOMC (décision de taux)", "impact": "high", "currency": "USD", "example": true }
+    { "datetime": "2026-06-22T13:00:00Z", "name": "FOMC Member Waller Speaks", "impact": "medium", "currency": "USD" },
+    { "datetime": "2026-06-25T12:30:00Z", "name": "US Core PCE m/m (+ GDP final, Claims, Durable Goods)", "impact": "high", "currency": "USD" },
+    { "datetime": "2026-06-25T19:40:00Z", "name": "FOMC Member Williams Speaks", "impact": "medium", "currency": "USD" },
+    { "datetime": "2026-06-25T22:30:00Z", "name": "FOMC Member Goolsbee Speaks", "impact": "medium", "currency": "USD" },
+    { "datetime": "2026-06-26T14:30:00Z", "name": "FOMC Member Williams Speaks", "impact": "medium", "currency": "USD" },
+    { "datetime": "2026-06-26T15:30:00Z", "name": "FOMC Member Kashkari Speaks", "impact": "medium", "currency": "USD" }
   ]
 }
